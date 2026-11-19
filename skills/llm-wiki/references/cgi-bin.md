@@ -25,7 +25,7 @@ no-store` and `X-Wiki: 1`. The panel trusts only an answer that carries
 | 403 | `Sec-Fetch-Site` is cross-site, or `Origin` is not `Host` |
 | 404 | no such action, or no such concept |
 | 405 | anything but GET |
-| 500 | the root is not set or is missing |
+| 500 | the root is not set or is missing, or okf isn't installed (`error` starts with `wiki: okf not found`) |
 | 502 | okf failed; `error` carries its message |
 
 Query values are cut to 200 characters. A refused request never runs okf.

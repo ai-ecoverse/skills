@@ -91,9 +91,45 @@ test("wiki okf puts the root after the okf command and passes okf's exit status 
     ]);
     r = box.run(['okf', 'validate'], { WIKI_ROOT: box.kb, FAKE_OKF_STATUS: '1' });
     is(r.exitCode, 1, "okf's validation failure is wiki's exit status");
-    r = box.run(['okf', 'validate'], { WIKI_ROOT: box.kb, OKF_BIN: path.join(box.dir, 'no-okf') });
-    is(r.exitCode, 1);
-    ok(r.stderr.includes('install @ai-ecoverse/wasi-okf'), r.stderr);
+  });
+});
+
+test('without okf, wiki okf exits 127 and says how to get okf; the panel says the same', async () => {
+  await withBox(async (box) => {
+    seed(box);
+    const missing = path.join(box.dir, 'no-okf');
+    let r = box.run(['okf', 'validate'], { WIKI_ROOT: box.kb, OKF_BIN: missing });
+    is(r.exitCode, 127, 'no okf is not a validation failure');
+    is(r.stdout, '');
+    ok(r.stderr.startsWith(`wiki: okf not found (OKF_BIN=${missing}).`), r.stderr);
+    ok(r.stderr.includes("@ai-ecoverse/wasi-okf isn't on npm yet"), r.stderr);
+    ok(r.stderr.includes('https://github.com/okfcli/okf'), r.stderr);
+
+    const okfOnPath = (process.env.PATH || '')
+      .split(':')
+      .some((d) => d && fs.existsSync(path.join(d, 'okf')));
+    if (!okfOnPath) {
+      r = box.run(['okf', 'version'], { WIKI_ROOT: box.kb, OKF_BIN: '' });
+      is(r.exitCode, 127);
+      ok(r.stderr.startsWith('wiki: okf not found (okf on PATH).'), r.stderr);
+    }
+
+    r = box.run(['log', 'Update', 'Works without okf.'], { WIKI_ROOT: box.kb, OKF_BIN: missing });
+    is(r.exitCode, 0, 'wiki log needs no okf');
+
+    const dir = path.join(box.dir, 'panel');
+    r = box.run(['sprinkle', dir], { WIKI_ROOT: box.kb, OKF_BIN: missing });
+    is(r.exitCode, 0, 'the panel installs without okf');
+    ok(r.stderr.includes('wiki: okf not found'), 'with a warning that names the problem');
+    ok(r.stderr.includes('the panel shows this message'), r.stderr);
+
+    const answer = parseCgi(
+      box.run(['cgi', 'concepts'], { WIKI_ROOT: box.kb, OKF_BIN: missing, REQUEST_METHOD: 'GET' })
+        .stdout
+    );
+    is(answer.status, 500);
+    is(answer.body.ok, false);
+    ok(answer.body.error.startsWith('wiki: okf not found'), answer.body.error);
   });
 });
 
@@ -121,6 +157,24 @@ test("wiki log keeps OKF's log format: date groups, newest first", async () => {
       `# Directory Update Log\n\n## ${day}\n* **Update**: New.\n\n## 2020-01-02\n* **Update**: Old.\n`
     );
 
+    const old =
+      '# Wiki log\n\n## [2026-01-02] ingest | Ada notes\nAdded [[Ada]].\n\n\n\nKept as written.\n';
+    box.write('log.md', old);
+    box.run(['log', 'Update', 'First OKF entry.'], env);
+    is(
+      fs.readFileSync(path.join(box.kb, 'log.md'), 'utf8'),
+      `# Wiki log\n\n## ${day}\n* **Update**: First OKF entry.\n\n${old.slice('# Wiki log\n\n'.length)}`,
+      'with no OKF date heading yet, the new group goes under the title, and the rest is untouched'
+    );
+
+    box.write('log.md', 'Notes without a title.\n');
+    box.run(['log', 'Update', 'Top.'], env);
+    is(
+      fs.readFileSync(path.join(box.kb, 'log.md'), 'utf8'),
+      `## ${day}\n* **Update**: Top.\n\nNotes without a title.\n`,
+      'without a title, the new group goes first'
+    );
+
     is(box.run(['log', 'two words', 'x'], env).exitCode, 2, 'a kind is one word');
     is(box.run(['log', 'update'], env).exitCode, 2, 'a message is required');
     is(
@@ -134,7 +188,7 @@ test("wiki log keeps OKF's log format: date groups, newest first", async () => {
 test('wiki sprinkle installs the panel and a cgi-bin/ bound to the root and okf', async () => {
   await withBox(async (box) => {
     const dir = path.join(box.dir, 'sprinkles', 'llm-wiki');
-    const odd = path.join(box.dir, `it's "kb"`);
+    const odd = path.join(box.dir, `it's "kb" $& $'`);
     fs.mkdirSync(odd);
     const r = box.run(['sprinkle', dir, '--root', odd]);
     is(r.exitCode, 0, r.stderr);
@@ -145,7 +199,9 @@ test('wiki sprinkle installs the panel and a cgi-bin/ bound to the root and okf'
     ]);
     const html = fs.readFileSync(path.join(dir, 'llm-wiki.shtml'), 'utf8');
     ok(
-      html.includes(`<meta name="llm-wiki-root" content="${odd.replace(/"/g, '&quot;')}" />`),
+      html.includes(
+        `<meta name="llm-wiki-root" content="${odd.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}" />`
+      ),
       'the root is in the panel, attribute-escaped'
     );
     const sh = fs.readFileSync(path.join(dir, 'cgi-bin', 'show'), 'utf8');

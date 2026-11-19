@@ -1,5 +1,3 @@
-// Runs the shipped wiki.jsh with node (as its jsh shebang would) in a sandbox:
-// a throwaway HOME, config file and bundle, and tests/fake-okf.js as okf.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -77,7 +75,6 @@ export async function withBox(fn) {
   }
 }
 
-/** A CGI answer split into its status, headers and JSON body. */
 export function parseCgi(stdout) {
   const at = stdout.indexOf('\r\n\r\n');
   const head = stdout.slice(0, at).split('\r\n');

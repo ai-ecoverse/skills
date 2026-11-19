@@ -11,13 +11,16 @@
       --fg: var(--s2-content-default, CanvasText);
       --fg-muted: var(--s2-content-secondary, color-mix(in srgb, CanvasText 65%, transparent));
       --line: var(--s2-border-subtle, color-mix(in srgb, CanvasText 12%, transparent));
-      --chip: var(--s2-bg-layer-2, color-mix(in srgb, CanvasText 9%, transparent));
-      --hover: var(--s2-bg-layer-2, color-mix(in srgb, CanvasText 6%, transparent));
+      --field-line: var(--s2-gray-500, color-mix(in srgb, CanvasText 45%, transparent));
+      --chip: var(--s2-gray-200, color-mix(in srgb, CanvasText 9%, transparent));
+      --hover: var(--s2-gray-100, color-mix(in srgb, CanvasText 6%, transparent));
       --field: var(--s2-bg-base, Canvas);
+      --focus: var(--s2-border-focus, var(--s2-accent, CanvasText));
       --primary-bg: var(--s2-accent, CanvasText);
-      --primary-fg: var(--s2-bg-base, Canvas);
-      --negative: var(--s2-negative, #d33);
-      --notice: var(--s2-notice, #b60);
+      --primary-fg: var(--swc-static-white-text-color, Canvas);
+      --primary-hover: var(--s2-accent-hover, var(--s2-accent, CanvasText));
+      --negative: var(--s2-content-negative, var(--s2-negative, #d33));
+      --notice: var(--s2-content-notice, var(--s2-notice, #b60));
       --radius: var(--s2-radius-default, 6px);
     }
     [hidden] { display: none !important; }
@@ -25,237 +28,286 @@
     html, body { height: 100%; }
     body { margin: 0; display: flex; flex-direction: column; color: var(--fg); font: 14px/1.45 var(--s2-font-family, system-ui, sans-serif); container-type: inline-size; }
     header { padding: 12px 12px 0; }
-    h1 { font-size: 15px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-    h1 small { font-weight: normal; color: var(--fg-muted); font-size: 12px; overflow-wrap: anywhere; text-align: right; }
+    h1 { font-size: 15px; margin: 0 0 8px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 8px; }
+    h1 small { font-weight: normal; color: var(--fg-muted); font-size: 12px; overflow-wrap: anywhere; }
     .tools { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
     @container (min-width: 480px) { .tools { grid-template-columns: minmax(0, 1fr) minmax(0, 12em); } }
-    input, select, textarea { font: inherit; font-size: 13px; color: inherit; background: var(--field); border: 1px solid var(--line); border-radius: var(--radius); padding: 5px 8px; min-width: 0; width: 100%; }
+    input, select, textarea { font: inherit; font-size: 13px; color: inherit; background: var(--field); border: 1px solid var(--field-line); border-radius: var(--radius); padding: 5px 8px; min-width: 0; width: 100%; }
+    input::placeholder, textarea::placeholder { color: var(--fg-muted); opacity: 1; }
     button { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: var(--radius); border: 1px solid transparent; background: transparent; color: inherit; cursor: pointer; }
-    :where(button, select, input, textarea, a):focus-visible { outline: 2px solid var(--primary-bg); outline-offset: 1px; }
+    :where(button, select, input, textarea, a):focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     .primary { background: var(--primary-bg); color: var(--primary-fg); font-weight: 600; }
+    .primary:not([disabled]):hover { background: var(--primary-hover); }
     button[disabled] { opacity: .4; cursor: default; }
     main { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; }
-    .section { margin: 14px 0 2px; padding: 0 2px; font-size: 12px; font-weight: normal; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-muted); }
+    .section { margin: 14px 0 2px; padding: 0 2px; font-size: 12px; font-weight: normal; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-muted); overflow-wrap: anywhere; }
     ul { list-style: none; margin: 0; padding: 0; }
-    .row { border-bottom: 1px solid var(--line); min-width: 0; }
+    .row { border-bottom: 1px solid var(--line); min-width: 0; scroll-margin-top: 28px; }
     .row:last-child { border-bottom: 0; }
     .head { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 1em minmax(0, 1fr) auto; column-gap: 6px; align-items: start; width: 100%; padding: 10px 2px 2px; cursor: pointer; border-radius: var(--radius); }
     .head:hover { background: var(--hover); }
-    .head:focus-visible { outline: 2px solid var(--primary-bg); outline-offset: -2px; }
+    .head:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
     .chev { color: var(--fg-muted); transition: transform .12s ease-in-out; line-height: 1.45; }
-    .row[data-open] .chev { transform: rotate(90deg); }
+    .row[data-expanded] .chev { transform: rotate(90deg); }
     @media (prefers-reduced-motion: reduce) { .chev { transition: none; } }
     .title { font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-    .row[data-open] .title { -webkit-line-clamp: unset; }
-    .type { font-size: 11px; color: var(--fg-muted); padding: 0 6px; border-radius: var(--s2-radius-pill, 999px); background: var(--chip); white-space: nowrap; max-width: 12em; overflow: hidden; text-overflow: ellipsis; }
+    .row[data-expanded] .title { -webkit-line-clamp: unset; }
+    .type { font-size: 11px; color: var(--fg-muted); padding: 0 6px; border-radius: var(--s2-radius-pill, 999px); background: var(--chip); white-space: nowrap; max-width: 10em; overflow: hidden; text-overflow: ellipsis; }
     .desc { margin: 2px 0 10px calc(1em + 8px); color: var(--fg-muted); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-    .row[data-open] .desc { -webkit-line-clamp: unset; }
+    .desc:empty { margin-bottom: 8px; }
+    .row[data-expanded] .desc { -webkit-line-clamp: unset; }
     .detail { margin: 0 0 12px calc(1em + 8px); min-width: 0; }
-    .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--fg-muted); margin-bottom: 6px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--fg-muted); margin-bottom: 6px; overflow-wrap: anywhere; }
     .meta .stale { color: var(--notice); }
     .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
-    .tag { font-size: 11px; padding: 0 6px; border-radius: var(--s2-radius-pill, 999px); background: var(--chip); }
+    .tag { font-size: 11px; padding: 0 6px; border-radius: var(--s2-radius-pill, 999px); background: var(--chip); overflow-wrap: anywhere; }
     .body { overflow-wrap: anywhere; }
     .body :is(h2, h3, h4) { font-size: 13px; margin: 12px 0 4px; }
     .body :is(p, ul, ol, pre, table, blockquote) { margin: 6px 0; }
     .body ul, .body ol { padding-left: 1.3em; list-style: revert; }
     .body pre { overflow-x: auto; padding: 8px; background: var(--chip); border-radius: var(--radius); font-size: 12px; }
-    .body code { font-size: 12px; }
+    .body sup { font-size: 10px; color: var(--fg-muted); }
+    .body code { font: 12px var(--s2-font-mono, ui-monospace, monospace); }
+    .body hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
     .body table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 12px; }
     .body :is(th, td) { border: 1px solid var(--line); padding: 2px 6px; text-align: left; vertical-align: top; }
     .body blockquote { margin-left: 0; padding-left: 8px; border-left: 2px solid var(--line); color: var(--fg-muted); }
-    .link { all: unset; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
-    .link:focus-visible { outline: 2px solid var(--primary-bg); }
+    .link { all: unset; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+    .link:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     .backlinks { font-size: 12px; color: var(--fg-muted); margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
     .empty { color: var(--fg-muted); padding: 16px 2px; }
     .error { color: var(--negative); padding: 8px 12px 0; font-size: 12px; overflow-wrap: anywhere; }
+    .notice { color: var(--fg-muted); padding: 8px 12px 0; font-size: 12px; overflow-wrap: anywhere; }
     footer { border-top: 1px solid var(--line); padding: 8px 12px 12px; display: grid; gap: 6px; }
-    footer textarea { min-height: 7.5em; resize: vertical; }
-    footer .row-actions { display: flex; align-items: center; gap: 8px; }
-    footer .row-actions .note { flex: 1; min-width: 0; font-size: 11px; color: var(--fg-muted); overflow-wrap: anywhere; }
+    footer label { margin: 0; }
+    footer textarea { min-height: 5em; resize: vertical; }
+    .actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 8px; }
+    .actions .note { flex: 1 1 8em; min-width: 0; font-size: 11px; color: var(--fg-muted); overflow-wrap: anywhere; }
     a { color: inherit; }
   </style>
 </head>
 <body>
   <header>
-    <h1>Knowledge base <small id="count" aria-live="polite"></small></h1>
+    <h1><span>Knowledge base</span> <small id="count" aria-live="polite"></small></h1>
     <div class="tools" role="search">
       <input id="q" type="search" placeholder="Search titles and text" aria-label="Search the knowledge base" autocomplete="off" />
-      <select id="type" aria-label="Type"><option value="">All types</option></select>
+      <select id="type" aria-label="Filter by type"><option value="">All types</option></select>
     </div>
   </header>
-  <div id="error" class="error" role="status" hidden></div>
-  <main id="list" aria-busy="true"></main>
+  <div id="error" class="error" role="alert" hidden></div>
+  <div id="notice" class="notice" role="status" hidden></div>
+  <main id="list" aria-busy="true"><div class="empty">Loading the knowledge base…</div></main>
   <footer id="composer" hidden>
-    <label for="ask" class="section" style="margin:0">Ask or add</label>
+    <label for="ask" class="section">Ask or add</label>
     <textarea id="ask" placeholder="Ask a question, or paste a source to ingest"></textarea>
-    <div class="row-actions">
-      <span class="note" id="askNote"></span>
-      <button type="button" class="primary" id="send">Send</button>
+    <div class="actions">
+      <span class="note" id="askNote" aria-live="polite"></span>
+      <button type="button" class="primary" id="send" disabled>Send</button>
     </div>
   </footer>
   <script>
+    const md = (() => {
+      const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+      const unesc = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[e]);
+      const fence = /^\s{0,3}```/;
+      const heading = /^(#{1,6})\s+(.*)$/;
+      const item = /^\s*([-*+]|\d+\.)\s+/;
+      const quote = /^\s{0,3}>\s?/;
+      const rule = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
+
+      function resolveId(href, from) {
+        if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#') || href.startsWith('//')) return null;
+        const clean = href.split('#')[0].split('?')[0];
+        if (!clean.endsWith('.md')) return null;
+        const base = clean.startsWith('/') ? [] : String(from || '').split('/').slice(0, -1);
+        for (const part of clean.replace(/^\/+/, '').split('/')) {
+          if (part === '..') base.pop();
+          else if (part && part !== '.') base.push(part);
+        }
+        const id = base.join('/').replace(/\.md$/, '');
+        return id || null;
+      }
+
+      function inline(text, from) {
+        let s = esc(String(text).replace(/\u0000/g, ''));
+        const codes = [];
+        s = s.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
+        s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
+          const raw = unesc(href).trim();
+          const url = raw.split(/\s+/)[0];
+          const id = resolveId(raw, from) || resolveId(url, from);
+          if (id) return `<button type="button" class="link" data-open="${esc(id)}">${label}</button>`;
+          if (/^https?:\/\//i.test(url)) return `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+          return label;
+        });
+        s = s.replace(/\[\^([^\]\s]+)\]/g, '<sup>[$1]</sup>');
+        s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
+        return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[Number(i)] ?? ''}</code>`);
+      }
+
+      function cells(row) {
+        let s = row.trim();
+        if (s.startsWith('|')) s = s.slice(1);
+        if (s.endsWith('|')) s = s.slice(0, -1);
+        return s.split('|').map((c) => c.trim());
+      }
+
+      function tableAt(lines, i) {
+        if (!lines[i].includes('|') || i + 1 >= lines.length || !lines[i + 1].includes('|')) return false;
+        const sep = cells(lines[i + 1]);
+        return sep.length > 0 && sep.every((c) => /^:?-+:?$/.test(c));
+      }
+
+      function blockAt(lines, i) {
+        const line = lines[i];
+        return fence.test(line) || heading.test(line) || rule.test(line) || item.test(line) || quote.test(line) || tableAt(lines, i);
+      }
+
+      function markdown(source, from) {
+        const lines = String(source ?? '').replace(/\r\n?/g, '\n').split('\n');
+        const out = [];
+        let i = 0;
+        while (i < lines.length) {
+          const start = i;
+          const line = lines[i];
+          const h = heading.exec(line);
+          if (!line.trim()) {
+            i++;
+          } else if (fence.test(line)) {
+            const buf = [];
+            for (i++; i < lines.length && !fence.test(lines[i]); i++) buf.push(lines[i]);
+            i++;
+            out.push(`<pre><code>${esc(buf.join('\n'))}</code></pre>`);
+          } else if (h) {
+            const level = Math.min(4, h[1].length + 1);
+            out.push(`<h${level}>${inline(h[2], from)}</h${level}>`);
+            i++;
+          } else if (rule.test(line)) {
+            out.push('<hr>');
+            i++;
+          } else if (tableAt(lines, i)) {
+            const head = cells(lines[i]);
+            const rows = [];
+            for (i += 2; i < lines.length && lines[i].trim() && lines[i].includes('|'); i++) rows.push(cells(lines[i]));
+            const cell = (tag, c) => `<${tag}>${inline(c, from)}</${tag}>`;
+            out.push(`<table><thead><tr>${head.map((c) => cell('th', c)).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => cell('td', c)).join('')}</tr>`).join('')}</tbody></table>`);
+          } else if (item.test(line)) {
+            const tag = /^\s*\d+\./.test(line) ? 'ol' : 'ul';
+            const items = [];
+            for (; i < lines.length && item.test(lines[i]) && !rule.test(lines[i]); i++) items.push(lines[i].replace(item, ''));
+            out.push(`<${tag}>${items.map((t) => `<li>${inline(t, from)}</li>`).join('')}</${tag}>`);
+          } else if (quote.test(line)) {
+            const buf = [];
+            for (; i < lines.length && quote.test(lines[i]); i++) buf.push(lines[i].replace(quote, ''));
+            out.push(`<blockquote>${inline(buf.join(' '), from)}</blockquote>`);
+          } else {
+            const buf = [lines[i++]];
+            while (i < lines.length && lines[i].trim() && !blockAt(lines, i)) buf.push(lines[i++]);
+            out.push(`<p>${inline(buf.join(' '), from)}</p>`);
+          }
+          if (i <= start) i = start + 1;
+        }
+        return out.join('');
+      }
+
+      return { esc, resolveId, inline, markdown };
+    })();
+
     const ROOT = document.querySelector('meta[name="llm-wiki-root"]').content;
     const POLL_MS = 15000;
     const bridge = typeof slicc === 'object' && slicc ? slicc : null;
-    const state = { q: '', type: '', open: null, concepts: [], types: [], details: new Map(), seq: 0 };
+    const state = { q: '', type: '', open: null, draft: '', concepts: [], types: [], details: new Map(), seq: 0, shown: '' };
 
     const $ = (id) => document.getElementById(id);
-    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const el = (tag, props = {}, ...children) => {
+      const node = Object.assign(document.createElement(tag), props);
+      node.append(...children.filter((c) => c !== null && c !== undefined && c !== false));
+      return node;
+    };
 
     function showError(text) {
       $('error').hidden = !text;
       $('error').textContent = text || '';
     }
 
+    function showNotice(text) {
+      $('notice').hidden = !text;
+      $('notice').textContent = text || '';
+    }
+
     async function cgi(pathAndQuery) {
       const res = await fetch(`cgi-bin/${pathAndQuery}`, { cache: 'no-store' });
       if (res.headers.get('x-wiki') !== '1') throw new Error('This panel needs a SLICC whose sprinkles run cgi-bin/ (or a CGI server); run `wiki sprinkle` again.');
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!data.ok) throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status });
       return data;
     }
 
-    // ── markdown: escaped first, then a small subset; links to concepts open them here
-    function resolveId(href, from) {
-      if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#')) return null;
-      const clean = href.split('#')[0].split('?')[0];
-      if (!clean.endsWith('.md')) return null;
-      const base = clean.startsWith('/') ? [] : from.split('/').slice(0, -1);
-      for (const part of clean.replace(/^\/+/, '').split('/')) {
-        if (part === '..') base.pop();
-        else if (part && part !== '.') base.push(part);
-      }
-      return base.join('/').replace(/\.md$/, '');
-    }
-
-    function inline(text, from) {
-      let s = esc(text);
-      const codes = [];
-      s = s.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
-      s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) => {
-        const raw = href.replace(/&amp;/g, '&');
-        const id = resolveId(raw, from);
-        if (id) return `<button type="button" class="link" data-open="${esc(id)}">${label}</button>`;
-        if (/^https?:\/\//i.test(raw)) return `<a href="${esc(raw)}" target="_blank" rel="noopener">${label}</a>`;
-        return label;
-      });
-      s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
-      return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[Number(i)]}</code>`);
-    }
-
-    function markdown(md, from) {
-      const lines = String(md || '').replace(/\r\n/g, '\n').split('\n');
-      const out = [];
-      let i = 0;
-      while (i < lines.length) {
-        const line = lines[i];
-        if (/^```/.test(line)) {
-          const buf = [];
-          for (i++; i < lines.length && !/^```/.test(lines[i]); i++) buf.push(lines[i]);
-          i++;
-          out.push(`<pre><code>${esc(buf.join('\n'))}</code></pre>`);
-          continue;
-        }
-        const h = /^(#{1,6})\s+(.*)$/.exec(line);
-        if (h) {
-          const level = Math.min(4, h[1].length + 1);
-          out.push(`<h${level}>${inline(h[2], from)}</h${level}>`);
-          i++;
-          continue;
-        }
-        if (/^\s*\|.*\|\s*$/.test(line)) {
-          const rows = [];
-          for (; i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i]); i++) rows.push(lines[i]);
-          const cells = (r) => r.trim().slice(1, -1).split('|').map((c) => c.trim());
-          const body = rows.filter((r) => !/^\s*\|[\s:|-]+\|\s*$/.test(r));
-          const [head, ...rest] = body;
-          out.push(`<table><thead><tr>${cells(head).map((c) => `<th>${inline(c, from)}</th>`).join('')}</tr></thead><tbody>${rest.map((r) => `<tr>${cells(r).map((c) => `<td>${inline(c, from)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
-          continue;
-        }
-        if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
-          const ordered = /^\s*\d+\./.test(line);
-          const items = [];
-          for (; i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i]); i++) items.push(lines[i].replace(/^\s*([-*+]|\d+\.)\s+/, ''));
-          const tag = ordered ? 'ol' : 'ul';
-          out.push(`<${tag}>${items.map((t) => `<li>${inline(t, from)}</li>`).join('')}</${tag}>`);
-          continue;
-        }
-        if (/^>\s?/.test(line)) {
-          const buf = [];
-          for (; i < lines.length && /^>\s?/.test(lines[i]); i++) buf.push(lines[i].replace(/^>\s?/, ''));
-          out.push(`<blockquote>${inline(buf.join(' '), from)}</blockquote>`);
-          continue;
-        }
-        if (!line.trim()) {
-          i++;
-          continue;
-        }
-        const buf = [];
-        for (; i < lines.length && lines[i].trim() && !/^(```|#{1,6}\s|\s*\||\s*([-*+]|\d+\.)\s|>)/.test(lines[i]); i++) buf.push(lines[i]);
-        out.push(`<p>${inline(buf.join(' '), from)}</p>`);
-      }
-      return out.join('');
-    }
-
-    // ── rendering
     function groupOf(id) {
       const i = id.indexOf('/');
       return i < 0 ? '' : id.slice(0, i);
     }
 
-    function detailHtml(c) {
+    function linkButton(id, label) {
+      const b = el('button', { type: 'button', className: 'link', textContent: label || id });
+      b.dataset.open = id;
+      return b;
+    }
+
+    function detailNode(c) {
       const d = state.details.get(c.id);
-      if (!d) return '<div class="detail"><div class="meta">Loading…</div></div>';
-      if (d.error) return `<div class="detail"><div class="error" style="padding:0">${esc(d.error)}</div></div>`;
-      const k = d.concept;
-      const meta = [
-        `<span>${esc(k.id)}</span>`,
-        k.status ? `<span>${esc(k.status)}</span>` : '',
-        k.trust_tier ? `<span>${esc(k.trust_tier.replace(/_/g, ' '))}</span>` : '',
-        k.stale ? '<span class="stale">stale</span>' : '',
-        k.resource && /^https?:\/\//i.test(k.resource) ? `<a href="${esc(k.resource)}" target="_blank" rel="noopener">resource ↗</a>` : '',
-      ].join('');
-      const tags = (k.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('');
-      const back = d.backlinks.length
-        ? `<div class="backlinks"><span>Linked from</span>${d.backlinks.map((b) => `<button type="button" class="link" data-open="${esc(b)}">${esc(b)}</button>`).join('')}</div>`
-        : '';
-      return `<div class="detail"><div class="meta">${meta}</div>${tags ? `<div class="tags">${tags}</div>` : ''}<div class="body">${markdown(k.body, k.id)}</div>${back}</div>`;
+      if (!d) return el('div', { className: 'detail' }, el('div', { className: 'meta', textContent: 'Loading…' }));
+      if (d.error) return el('div', { className: 'detail' }, el('div', { className: 'error', style: 'padding:0', textContent: d.error }));
+      const k = d.concept || {};
+      const meta = el('div', { className: 'meta' }, el('span', { textContent: k.id || c.id }));
+      if (k.status) meta.append(el('span', { textContent: String(k.status) }));
+      if (k.trust_tier) meta.append(el('span', { textContent: String(k.trust_tier).replace(/_/g, ' ') }));
+      if (k.stale) meta.append(el('span', { className: 'stale', textContent: 'stale' }));
+      if (typeof k.resource === 'string' && /^https?:\/\//i.test(k.resource)) meta.append(el('a', { href: k.resource, target: '_blank', rel: 'noopener noreferrer', textContent: 'resource ↗' }));
+      const tags = Array.isArray(k.tags) && k.tags.length ? el('div', { className: 'tags' }, ...k.tags.map((t) => el('span', { className: 'tag', textContent: String(t) }))) : null;
+      const body = el('div', { className: 'body' });
+      body.innerHTML = md.markdown(k.body, k.id || c.id);
+      const backs = Array.isArray(d.backlinks) ? d.backlinks : [];
+      const back = backs.length ? el('div', { className: 'backlinks' }, el('span', { textContent: 'Linked from' }), ...backs.map((b) => linkButton(String(b)))) : null;
+      return el('div', { className: 'detail' }, meta, tags, body, back);
     }
 
     function row(c) {
-      const li = document.createElement('li');
-      li.className = 'row';
-      li.dataset.id = c.id;
       const open = state.open === c.id;
-      if (open) li.dataset.open = '';
-      const title = c.title || c.id.split('/').pop();
-      li.innerHTML = `
-        <button type="button" class="head" aria-expanded="${open}">
-          <span class="chev" aria-hidden="true">›</span>
-          <span class="title">${esc(title)}</span>
-          ${c.type ? `<span class="type" title="${esc(c.type)}">${esc(c.type)}</span>` : ''}
-        </button>
-        ${c.description ? `<div class="desc">${esc(c.description)}</div>` : '<div class="desc"></div>'}
-        ${open ? detailHtml(c) : ''}`;
-      li.querySelector('.head').onclick = () => toggle(c.id);
+      const head = el(
+        'button',
+        { type: 'button', className: 'head', onclick: () => toggle(c.id) },
+        el('span', { className: 'chev', textContent: '›' }),
+        el('span', { className: 'title', textContent: c.title || c.id.split('/').pop() }),
+        c.type ? el('span', { className: 'type', title: c.type, textContent: c.type }) : null
+      );
+      head.setAttribute('aria-expanded', String(open));
+      head.querySelector('.chev').setAttribute('aria-hidden', 'true');
+      const li = el('li', { className: 'row' }, head, el('div', { className: 'desc', textContent: c.description || '' }), open ? detailNode(c) : null);
+      li.dataset.id = c.id;
+      if (open) li.dataset.expanded = '';
       return li;
     }
 
     function render() {
       const list = $('list');
+      const focused = document.activeElement;
+      const focusRow = focused && list.contains(focused) ? focused.closest('.row')?.dataset.id : null;
+      const focusOpen = focused && list.contains(focused) && focused.dataset.open ? focused.dataset.open : null;
       list.setAttribute('aria-busy', 'false');
       const n = state.concepts.length;
       const filtered = state.q || state.type;
       $('count').textContent = `${n} ${n === 1 ? 'concept' : 'concepts'}${filtered ? ' match' : ''}`;
       const sel = $('type');
       const want = ['', ...state.types];
+      if (state.type && !want.includes(state.type)) want.push(state.type);
       if (sel.options.length !== want.length || want.some((t, i) => sel.options[i].value !== t)) {
-        sel.replaceChildren(...want.map((t) => Object.assign(document.createElement('option'), { value: t, textContent: t || 'All types' })));
-        sel.value = state.types.includes(state.type) ? state.type : '';
+        sel.replaceChildren(...want.map((t) => el('option', { value: t, textContent: t || 'All types' })));
       }
+      sel.value = state.type;
+      updateNote();
       if (!n) {
-        list.replaceChildren(Object.assign(document.createElement('div'), { className: 'empty', textContent: filtered ? 'No concepts match.' : 'No concepts yet.' }));
+        list.replaceChildren(el('div', { className: 'empty', textContent: filtered ? 'No concepts match.' : 'No concepts yet.' }));
         return;
       }
       const groups = new Map();
@@ -266,42 +318,49 @@
       }
       const parts = [];
       for (const [g, items] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
-        const h = Object.assign(document.createElement('h2'), { className: 'section', textContent: g || 'Top level' });
-        const ul = document.createElement('ul');
-        ul.replaceChildren(...items.map(row));
-        parts.push(h, ul);
+        parts.push(el('h2', { className: 'section', textContent: g || 'Top level' }), el('ul', {}, ...items.map(row)));
       }
       list.replaceChildren(...parts);
-      updateNote();
+      if (focusRow) {
+        const r = list.querySelector(`.row[data-id="${CSS.escape(focusRow)}"]`);
+        const target = (focusOpen && r?.querySelector(`[data-open="${CSS.escape(focusOpen)}"]`)) || r?.querySelector('.head');
+        if (target) target.focus({ preventScroll: true });
+      }
     }
 
     async function toggle(id) {
       state.open = state.open === id ? null : id;
+      showNotice('');
       saveState();
       render();
       if (state.open) await loadDetail(id);
     }
 
     async function openConcept(id) {
+      showNotice('');
       if (!state.concepts.some((c) => c.id === id)) {
         state.q = '';
         state.type = '';
         $('q').value = '';
         await load();
       }
+      if (!state.concepts.some((c) => c.id === id)) {
+        showNotice(`${id} isn't written yet: the link points to a concept that doesn't exist.`);
+        return;
+      }
       state.open = id;
       saveState();
       render();
       await loadDetail(id);
-      const el = document.querySelector(`.row[data-id="${CSS.escape(id)}"] .head`);
-      if (el) {
-        el.scrollIntoView({ block: 'nearest' });
-        el.focus();
+      const head = document.querySelector(`.row[data-id="${CSS.escape(id)}"] .head`);
+      if (head) {
+        head.closest('.row').scrollIntoView({ block: 'start' });
+        head.focus();
       }
     }
 
-    async function loadDetail(id, force) {
-      if (!force && state.details.has(id) && !state.details.get(id).error) return render();
+    async function loadDetail(id) {
+      if (state.details.has(id) && !state.details.get(id).error) return;
       try {
         const d = await cgi(`show/${id.split('/').map(encodeURIComponent).join('/')}`);
         state.details.set(id, d);
@@ -319,18 +378,24 @@
       try {
         const data = await cgi(`concepts${params.size ? `?${params}` : ''}`);
         if (seq !== state.seq) return;
-        state.concepts = data.concepts;
-        state.types = data.types;
         showError('');
+        const shown = JSON.stringify([state.q, state.type, data.concepts, data.types]);
+        if (shown === state.shown && $('list').getAttribute('aria-busy') === 'false') return;
+        state.shown = shown;
+        state.concepts = Array.isArray(data.concepts) ? data.concepts : [];
+        state.types = Array.isArray(data.types) ? data.types : [];
+        state.details.clear();
         render();
+        if (state.open && state.concepts.some((c) => c.id === state.open)) loadDetail(state.open);
       } catch (e) {
         if (seq !== state.seq) return;
-        $('list').setAttribute('aria-busy', 'false');
+        const list = $('list');
+        list.setAttribute('aria-busy', 'false');
+        if (!state.shown) list.replaceChildren(el('div', { className: 'empty', textContent: 'Nothing to show until the knowledge base can be read.' }));
         showError(`Can't read the knowledge base at ${ROOT}: ${e.message || e}`);
       }
     }
 
-    // ── composer: one lick to the agent; the frame's text is data for it
     function updateNote() {
       const c = state.concepts.find((x) => x.id === state.open);
       $('askNote').textContent = c ? `About ${c.title || c.id}` : '';
@@ -341,12 +406,17 @@
       if (!text || !bridge) return;
       bridge.lick({ action: 'ask', data: { text, root: ROOT, ...(state.open ? { concept: state.open } : {}) } });
       $('ask').value = '';
-      $('askNote').textContent = 'Sent to the agent.';
+      state.draft = '';
+      $('send').disabled = true;
+      saveState();
+      $('askNote').textContent = 'Sent to the agent. It answers in the chat.';
     }
 
-    // ── state across reloads
     function saveState() {
-      if (bridge && bridge.setState) bridge.setState({ q: state.q, type: state.type, open: state.open });
+      if (!bridge || !bridge.setState) return;
+      try {
+        Promise.resolve(bridge.setState({ q: state.q, type: state.type, open: state.open, draft: state.draft })).catch(() => {});
+      } catch {}
     }
 
     async function start() {
@@ -357,14 +427,17 @@
           state.q = typeof s.q === 'string' ? s.q : '';
           state.type = typeof s.type === 'string' ? s.type : '';
           state.open = typeof s.open === 'string' ? s.open : null;
-          $('q').value = state.q;
+          state.draft = typeof s.draft === 'string' ? s.draft : '';
         } catch {}
+        $('q').value = state.q;
+        $('ask').value = state.draft;
+        $('send').disabled = !state.draft.trim();
       }
       await load();
-      if (state.open) loadDetail(state.open);
     }
 
     let timer = null;
+    let draftTimer = null;
     $('q').addEventListener('input', () => {
       clearTimeout(timer);
       timer = setTimeout(() => {
@@ -379,12 +452,21 @@
       load();
     });
     $('list').addEventListener('click', (e) => {
-      const b = e.target.closest('[data-open]');
+      const b = e.target.closest('button.link[data-open]');
       if (b) openConcept(b.dataset.open);
     });
     $('send').onclick = send;
+    $('ask').addEventListener('input', () => {
+      state.draft = $('ask').value;
+      $('send').disabled = !state.draft.trim();
+      clearTimeout(draftTimer);
+      draftTimer = setTimeout(saveState, 400);
+    });
     $('ask').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send();
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        send();
+      }
     });
     setInterval(() => {
       if (!document.hidden) load();

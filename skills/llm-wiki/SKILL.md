@@ -1,6 +1,6 @@
 ---
 name: llm-wiki
-description: Build and maintain a persistent knowledge base in the Open Knowledge Format (OKF) — a folder of markdown concepts with YAML frontmatter — using the okf CLI as its engine and a wiki helper for the bundle root, log.md and a browsing panel. Use when the user wants to create a knowledge base or wiki, ingest an article, paper, transcript or note into it, ask what it knows, organize research notes, validate or lint it for broken links, missing types and stale concepts, find what links to a page, browse it in a SLICC panel, or move an older llm-wiki tree to OKF. Triggers on knowledge base, KB, wiki, OKF, Open Knowledge Format, okf validate, ingest, research notes, personal wiki, concept, backlinks.
+description: Build and maintain a persistent knowledge base in the Open Knowledge Format (OKF) — a folder of markdown concepts with YAML frontmatter — using the okf CLI as its engine and a wiki helper for the bundle root, log.md and a browsing panel. Use when the user wants to create a knowledge base or wiki, ingest an article, paper, transcript or note into it, ask what it knows, organize research notes, validate or lint it for broken links, missing types and stale concepts, find what links to a page, browse it in a SLICC panel, or move an older llm-wiki tree to OKF. Triggers on knowledge base, KB, wiki, personal wiki, second brain, Zettelkasten, research notes, OKF, Open Knowledge Format, okf validate, ingest a source into the wiki, backlinks.
 allowed-tools: bash
 ---
 
@@ -8,19 +8,22 @@ allowed-tools: bash
 
 A knowledge base is an [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle: a directory tree of **concepts**, one markdown file each, with YAML frontmatter. A concept's id is its path without `.md`. `index.md` and `log.md` are reserved at every level. Two commands do the work:
 
-- `okf` (`@ai-ecoverse/wasi-okf`) creates, validates, lints, indexes, lists, shows, searches and graphs a bundle, and prints JSON on stdout.
+- `okf` ([okfcli/okf](https://github.com/okfcli/okf)) creates, validates, lints, indexes, lists, shows, searches and graphs a bundle, and prints JSON on stdout.
 - `wiki` (this skill) keeps the bundle root, runs okf on it, writes `log.md` entries, and installs the panel.
 
 ## Setup
 
 ```bash
-pnpm add -g @ai-ecoverse/wasi-okf <this skill's folder>   # okf and wiki on PATH
-okf init ~/kb                                             # or use an existing bundle
-wiki config set root ~/kb                                 # --root and WIKI_ROOT override it
-wiki okf validate                                         # okf validate <root>
+pnpm add -g <this skill's folder>    # puts wiki on PATH
+okf version                          # okf must be on PATH, or set OKF_BIN=/path/to/okf
+okf init ~/kb                        # or use an existing bundle
+wiki config set root ~/kb            # --root and WIKI_ROOT override it
+wiki okf validate                    # okf validate <root>
 ```
 
-`wiki --help` lists every command. `wiki okf <command> [args]` is `okf <command> <root> [args]`, and exits with okf's status: 0 ok, 1 validation error, 2 I/O error, 4 usage error.
+**okf isn't installable from npm yet.** Its SLICC build, `@ai-ecoverse/wasi-okf`, isn't published (`npm view` answers E404). Until it is, use an okf build that is already on PATH or in `OKF_BIN`. Without one, `wiki okf …` prints `wiki: okf not found (…)` with where to get it and exits 127, and the panel shows the same message instead of the concepts. `wiki root`, `config`, `log` and `sprinkle` work without okf. When okf is missing, tell the user before going on.
+
+`wiki --help` lists every command. `wiki okf <command> [args]` is `okf <command> <root> [args]`, and exits with okf's status: 0 ok, 1 validation error, 2 I/O error, 4 usage error (127: no okf).
 
 ## Rules
 
@@ -82,4 +85,4 @@ Its text box sends a lick on `sprinkle:llm-wiki` with action `ask` and body `{ t
 
 ## Moving an llm-wiki tree to OKF
 
-okf won't load a bundle in which any `.md` file other than `index.md` and `log.md` has no frontmatter. It stops at the first one (`parse README.md: no YAML frontmatter block found`). A page-per-topic llm-wiki tree with `[[wikilinks]]` therefore needs migrating. Follow [references/migrate-from-llm-wiki.md](references/migrate-from-llm-wiki.md): report first, then one page at a time with the user's consent.
+okf won't load a bundle in which any `.md` file other than `index.md` and `log.md` has no frontmatter, raw sources included (dot-directories are skipped). It stops at the first one (`parse README.md: no YAML frontmatter block found`). It also reports each old `## [YYYY-MM-DD] ingest | title` log heading as an ERROR. A page-per-topic llm-wiki tree with `[[wikilinks]]` therefore needs migrating. Follow [references/migrate-from-llm-wiki.md](references/migrate-from-llm-wiki.md): report first, then one page at a time with the user's consent.

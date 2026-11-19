@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-// A stand-in for okf in the tests: the JSON shapes of okf 0.5 for search,
-// show, backlinks, validate and version, read from the bundle on disk. It
-// appends its argv to $FAKE_OKF_LOG, and exits $FAKE_OKF_STATUS when set.
 const fs = require('fs');
 const path = require('path');
 

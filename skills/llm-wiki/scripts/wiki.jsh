@@ -1,8 +1,4 @@
 #!/usr/bin/env jsh
-// wiki — an Open Knowledge Format (OKF) knowledge base, with okf as its engine.
-// Resolves the bundle root, runs okf on it, keeps log.md in OKF's format,
-// installs the panel and answers the panel's cgi-bin/. Needs fs, path and
-// child_process only, so it runs under jsh (SLICC 7) and plain node.
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
@@ -28,9 +24,15 @@ ENVIRONMENT
   WIKI_CONFIG     the config file (default ~/.config/wiki/config.json)
   OKF_BIN         the okf program (default okf on PATH)
 
+OKF
+  wiki okf and the panel run okf (https://github.com/okfcli/okf). Its SLICC
+  package, @ai-ecoverse/wasi-okf, isn't on npm yet: put an okf build on PATH or
+  set OKF_BIN. Without it they stop with "wiki: okf not found" (exit 127);
+  root, config, log and sprinkle work without okf.
+
 The root is --root, then WIKI_ROOT, then "root" in the config file. There is
-no built-in default. Exit status: 0 ok, 1 error, 2 usage error; wiki okf
-exits with okf's status (1 validation, 2 I/O, 4 usage).`;
+no built-in default. Exit status: 0 ok, 1 error, 2 usage error, 127 no okf;
+wiki okf exits with okf's status (1 validation, 2 I/O, 4 usage).`;
 
 class Exit extends Error {
   constructor(code, message) {
@@ -43,7 +45,6 @@ const die = (msg, code = 1) => {
   throw new Exit(code, msg);
 };
 
-// ── config and root ─────────────────────────────────────────────────────
 function homeDir() {
   return process.env.HOME || process.env.USERPROFILE || '/tmp';
 }
@@ -102,19 +103,22 @@ function requireRoot(flag, warn) {
   return r;
 }
 
-// ── okf ─────────────────────────────────────────────────────────────────
 function okfBin() {
   return process.env.OKF_BIN || 'okf';
+}
+
+const OKF_MISSING = 127;
+
+function okfMissing() {
+  const where = process.env.OKF_BIN ? `OKF_BIN=${process.env.OKF_BIN}` : 'okf on PATH';
+  return `wiki: okf not found (${where}). wiki okf and the panel need it; wiki root, config, log and sprinkle don't. @ai-ecoverse/wasi-okf isn't on npm yet, so build okf from https://github.com/okfcli/okf and put it on PATH, or set OKF_BIN to it.`;
 }
 
 function okf(args) {
   const r = spawnSync(okfBin(), args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (r.error) {
-    const why =
-      r.error.code === 'ENOENT'
-        ? 'not found: install @ai-ecoverse/wasi-okf (pnpm add -g) or set OKF_BIN'
-        : r.error.message;
-    die(`wiki: cannot run ${okfBin()}: ${why}`);
+    if (r.error.code === 'ENOENT') die(okfMissing(), OKF_MISSING);
+    die(`wiki: cannot run ${okfBin()}: ${r.error.message}`);
   }
   return { status: r.status ?? 1, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
@@ -128,7 +132,6 @@ function okfJson(args) {
   return { ...r, data };
 }
 
-// ── log.md (OKF §9: date groups, newest first) ──────────────────────────
 function today() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
@@ -146,14 +149,15 @@ function addLogEntry(text, kind, message, date) {
     while (last > firstDate && lines[last].trim() === '') last--;
     lines.splice(last + 1, 0, entry);
   } else {
-    const at = firstDate >= 0 ? firstDate : lines.length;
-    const block = [`## ${date}`, entry, ''];
-    if (at > 0 && lines[at - 1].trim() !== '') block.unshift('');
-    lines.splice(at, 0, ...block);
+    const title = lines.findIndex((l) => /^# /.test(l));
+    const at = firstDate >= 0 ? firstDate : title + 1;
+    const before = at > 0 && lines[at - 1].trim() !== '' ? [''] : [];
+    const after = at < lines.length && lines[at].trim() !== '' ? [''] : [];
+    lines.splice(at, 0, ...before, `## ${date}`, entry, ...after);
   }
   let out = lines.join('\n');
   if (!out.endsWith('\n')) out += '\n';
-  return out.replace(/\n{3,}/g, '\n\n');
+  return out;
 }
 
 function cmdLog(root, words) {
@@ -181,7 +185,6 @@ function cmdLog(root, words) {
   return file;
 }
 
-// ── panel ───────────────────────────────────────────────────────────────
 const CGI_ACTIONS = ['concepts', 'show'];
 
 function shQuote(s) {
@@ -194,28 +197,30 @@ function htmlAttr(s) {
 
 function sprinkleDir(arg) {
   if (arg) return path.resolve(arg);
-  // SLICC 6 keeps sprinkles in /shared/sprinkles; SLICC 7 in the cone's ~/sprinkles (as loose-ends)
   if (fs.existsSync('/shared/sprinkles')) return path.join('/shared/sprinkles', NAME);
   return path.join(homeDir(), 'sprinkles', NAME);
 }
 
 function whichOkf() {
   const bin = okfBin();
-  if (bin.includes('/')) return path.resolve(bin);
-  for (const dir of (process.env.PATH || '').split(':')) {
-    if (dir && fs.existsSync(path.join(dir, bin))) return path.join(dir, bin);
+  if (bin.includes('/')) {
+    const abs = path.resolve(bin);
+    return { bin: abs, found: fs.existsSync(abs) };
   }
-  return bin;
+  for (const dir of (process.env.PATH || '').split(':')) {
+    if (dir && fs.existsSync(path.join(dir, bin))) return { bin: path.join(dir, bin), found: true };
+  }
+  return { bin, found: false };
 }
 
-function installSprinkle(dir, root, out) {
+function installSprinkle(dir, root, out, warn) {
   const script = path.resolve(__filename);
   const template = path.join(__dirname, '..', 'templates', `${NAME}.shtml`);
-  const html = fs.readFileSync(template, 'utf8').replace('__ROOT__', htmlAttr(root));
+  const html = fs.readFileSync(template, 'utf8').replace('__ROOT__', () => htmlAttr(root));
   fs.mkdirSync(path.join(dir, 'cgi-bin'), { recursive: true });
   fs.writeFileSync(path.join(dir, `${NAME}.shtml`), html);
   out(path.join(dir, `${NAME}.shtml`));
-  const bin = whichOkf();
+  const { bin, found } = whichOkf();
   for (const action of CGI_ACTIONS) {
     const target = path.join(dir, 'cgi-bin', action);
     fs.writeFileSync(
@@ -235,9 +240,10 @@ function installSprinkle(dir, root, out) {
     } catch {}
     out(target);
   }
+  if (!found)
+    warn(`${okfMissing()} Until then the panel shows this message instead of the concepts.`);
 }
 
-// ── cgi ─────────────────────────────────────────────────────────────────
 const STATUS = {
   200: 'OK',
   400: 'Bad Request',
@@ -283,7 +289,6 @@ function validId(id) {
   );
 }
 
-/** description and tags from a concept's frontmatter (single-line scalars and flow lists). */
 function frontmatterBits(file) {
   let text;
   try {
@@ -335,7 +340,6 @@ function cgiShow(root, write) {
   if (!validId(id)) return respond(write, 400, { ok: false, error: `not a concept id: ${id}` });
   const r = okfJson(['show', root, id]);
   if (r.status !== 0 || !r.data) {
-    // okf 0.5 answers a missing concept with code 400 and "concept not found"
     const e = r.data && r.data.error;
     const status = e && (e.code === 404 || /^concept not found/.test(e.message || '')) ? 404 : 502;
     return respond(write, status, { ok: false, error: okfError(r) });
@@ -375,7 +379,6 @@ function cgi(action, write) {
   }
 }
 
-// ── main ────────────────────────────────────────────────────────────────
 function takeRoot(argv) {
   const out = [];
   let root = null;
@@ -468,7 +471,7 @@ function main(argv, io) {
   }
   if (cmd === 'sprinkle') {
     const r = requireRoot(rootFlag, warn);
-    installSprinkle(sprinkleDir(rest[0]), r.root, (s) => out(`${s}\n`));
+    installSprinkle(sprinkleDir(rest[0]), r.root, (s) => out(`${s}\n`), warn);
     return 0;
   }
   die(`wiki: unknown command ${JSON.stringify(cmd)}\nRun 'wiki --help' for usage.`, 2);
