@@ -102,7 +102,7 @@ test('without okf, wiki okf exits 127 and says how to get okf; the panel says th
     is(r.exitCode, 127, 'no okf is not a validation failure');
     is(r.stdout, '');
     ok(r.stderr.startsWith(`wiki: okf not found (OKF_BIN=${missing}).`), r.stderr);
-    ok(r.stderr.includes("@ai-ecoverse/wasi-okf isn't on npm yet"), r.stderr);
+    ok(r.stderr.includes('cd /opt/user && pnpm add @ai-ecoverse/wasi-okf'), r.stderr);
     ok(r.stderr.includes('https://github.com/okfcli/okf'), r.stderr);
 
     const okfOnPath = (process.env.PATH || '')

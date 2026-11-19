@@ -10,7 +10,7 @@ A persistent knowledge base skill for [SLICC](https://github.com/ai-ecoverse/sli
 | `references/` | The panel's cgi-bin protocol, and moving an llm-wiki tree to OKF |
 | `tests/` | `tst` suites, with a stand-in okf |
 
-okf itself is [okfcli/okf](https://github.com/okfcli/okf). Its SLICC build, `@ai-ecoverse/wasi-okf`, isn't on npm yet, so okf has to be on PATH or in `OKF_BIN`; without it, `wiki okf` and the panel say `okf not found`.
+okf itself is [okfcli/okf](https://github.com/okfcli/okf). The package depends on its SLICC build, `@ai-ecoverse/wasi-okf`, so installing the skill in SLICC 7 brings `okf` along. Elsewhere, okf has to be on PATH or in `OKF_BIN`; without it, `wiki okf` and the panel say `okf not found`.
 
 Version 2 replaces the SLICC 6 version: `wiki.jsh` with its own page scanner, the single-file `llm-wiki.shtml` browser, and the `wiki-ops` scoop wiring.
 

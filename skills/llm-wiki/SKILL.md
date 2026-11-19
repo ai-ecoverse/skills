@@ -14,14 +14,14 @@ A knowledge base is an [OKF](https://github.com/GoogleCloudPlatform/knowledge-ca
 ## Setup
 
 ```bash
-pnpm add -g <this skill's folder>    # puts wiki on PATH
-okf version                          # okf must be on PATH, or set OKF_BIN=/path/to/okf
-okf init ~/kb                        # or use an existing bundle
-wiki config set root ~/kb            # --root and WIKI_ROOT override it
-wiki okf validate                    # okf validate <root>
+cd /opt/user && pnpm add <this skill's folder>   # SLICC 7, as root: wiki, and okf from @ai-ecoverse/wasi-okf
+wiki okf version                                 # okf 0.5.2
+okf init ~/kb                                    # or use an existing bundle
+wiki config set root ~/kb                        # --root and WIKI_ROOT override it
+wiki okf validate                                # okf validate <root>
 ```
 
-**okf isn't installable from npm yet.** Its SLICC build, `@ai-ecoverse/wasi-okf`, isn't published (`npm view` answers E404). Until it is, use an okf build that is already on PATH or in `OKF_BIN`. Without one, `wiki okf …` prints `wiki: okf not found (…)` with where to get it and exits 127, and the panel shows the same message instead of the concepts. `wiki root`, `config`, `log` and `sprinkle` work without okf. When okf is missing, tell the user before going on.
+The skill's package depends on `@ai-ecoverse/wasi-okf`, okf built for SLICC, so installing it in `/opt/user` makes both `wiki` and `okf` commands. Outside SLICC, `npm i -g <this skill's folder>` gives `wiki` (it runs under [slicc-jsh](https://github.com/ai-ecoverse/slicc-jsh) or node), but the wasm okf doesn't run there: put an [okf](https://github.com/okfcli/okf) build on PATH or set `OKF_BIN`. Without okf, `wiki okf …` prints `wiki: okf not found (…)` with how to get it and exits 127, and the panel shows the same message instead of the concepts. `wiki root`, `config`, `log` and `sprinkle` work without okf. When okf is missing, tell the user before going on.
 
 `wiki --help` lists every command. `wiki okf <command> [args]` is `okf <command> <root> [args]`, and exits with okf's status: 0 ok, 1 validation error, 2 I/O error, 4 usage error (127: no okf).
 

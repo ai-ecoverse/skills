@@ -25,10 +25,10 @@ ENVIRONMENT
   OKF_BIN         the okf program (default okf on PATH)
 
 OKF
-  wiki okf and the panel run okf (https://github.com/okfcli/okf). Its SLICC
-  package, @ai-ecoverse/wasi-okf, isn't on npm yet: put an okf build on PATH or
-  set OKF_BIN. Without it they stop with "wiki: okf not found" (exit 127);
-  root, config, log and sprinkle work without okf.
+  wiki okf and the panel run okf (https://github.com/okfcli/okf). In SLICC,
+  this package's dependency @ai-ecoverse/wasi-okf provides it; elsewhere, put
+  an okf build on PATH or set OKF_BIN. Without it they stop with "wiki: okf not
+  found" (exit 127); root, config, log and sprinkle work without okf.
 
 The root is --root, then WIKI_ROOT, then "root" in the config file. There is
 no built-in default. Exit status: 0 ok, 1 error, 2 usage error, 127 no okf;
@@ -111,7 +111,7 @@ const OKF_MISSING = 127;
 
 function okfMissing() {
   const where = process.env.OKF_BIN ? `OKF_BIN=${process.env.OKF_BIN}` : 'okf on PATH';
-  return `wiki: okf not found (${where}). wiki okf and the panel need it; wiki root, config, log and sprinkle don't. @ai-ecoverse/wasi-okf isn't on npm yet, so build okf from https://github.com/okfcli/okf and put it on PATH, or set OKF_BIN to it.`;
+  return `wiki: okf not found (${where}). wiki okf and the panel need it; wiki root, config, log and sprinkle don't. In SLICC, install this skill with pnpm in /opt/user, which brings okf (@ai-ecoverse/wasi-okf), or run: cd /opt/user && pnpm add @ai-ecoverse/wasi-okf. Elsewhere, put an okf build (https://github.com/okfcli/okf) on PATH or set OKF_BIN to it.`;
 }
 
 function okf(args) {
