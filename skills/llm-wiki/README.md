@@ -1,20 +1,22 @@
 # llm-wiki
 
-A persistent, interlinked markdown wiki knowledge base skill for [SLICC](https://github.com/ai-ecoverse/slicc). Implements the [Karpathy LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — the agent compiles source material into wiki pages so knowledge compounds instead of being rediscovered every query.
-
-## What's included
+A persistent knowledge base skill for [SLICC](https://github.com/ai-ecoverse/slicc), stored in the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) (OKF): a folder of markdown concepts with YAML frontmatter. The agent compiles sources into concepts so knowledge compounds instead of being rediscovered on every query ([Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)).
 
 | File | Purpose |
 |------|---------|
-| `SKILL.md` | Skill definition — setup, processes (ingest/query/lint), constraints |
-| `llm-wiki.shtml` | Sprinkle browser with sidebar nav, search, wikilinks, query/ingest dialogs |
-| `wiki.jsh` | CLI: search, list, read, stats, links, orphans, recent, log |
-| `references/` | Schema template, worked examples, SLICC integration, and the `wiki-ops` scoop brief |
-| `rules/` | Index/log conventions and optional tooling guidance |
+| `SKILL.md` | Setup, rules, ingest / query / lint with okf, the panel, moving an old tree |
+| `scripts/wiki.jsh` | The `wiki` command: bundle root, `wiki okf`, `wiki log`, `wiki sprinkle`, the panel's CGI |
+| `templates/llm-wiki.shtml` | The SLICC panel: search, type filter, concepts by folder, backlinks, an ask box |
+| `references/` | The panel's cgi-bin protocol, and moving an llm-wiki tree to OKF |
+| `tests/` | `tst` suites, with a stand-in okf |
+
+okf itself is [okfcli/okf](https://github.com/okfcli/okf), built for SLICC as `@ai-ecoverse/wasi-okf`.
+
+Version 2 replaces the SLICC 6 version: `wiki.jsh` with its own page scanner, the single-file `llm-wiki.shtml` browser, and the `wiki-ops` scoop wiring.
 
 ## Attribution
 
-Based on the [llm-wiki skill](https://github.com/kvokov/oh-my-ai) by DK, inspired by [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). Extended with SLICC sprinkle browser, wiki CLI, and ops scoop architecture.
+Based on the [llm-wiki skill](https://github.com/kvokov/oh-my-ai) by DK, inspired by [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f).
 
 ## License
 

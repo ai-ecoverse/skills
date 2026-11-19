@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Knowledge base</title>
+  <link rel="icon" href="library" />
+  <meta name="llm-wiki-root" content="__ROOT__" />
+  <style>
+    :root {
+      --fg: var(--s2-content-default, CanvasText);
+      --fg-muted: var(--s2-content-secondary, color-mix(in srgb, CanvasText 65%, transparent));
+      --line: var(--s2-border-subtle, color-mix(in srgb, CanvasText 12%, transparent));
+      --chip: var(--s2-bg-layer-2, color-mix(in srgb, CanvasText 9%, transparent));
+      --hover: var(--s2-bg-layer-2, color-mix(in srgb, CanvasText 6%, transparent));
+      --field: var(--s2-bg-base, Canvas);
+      --primary-bg: var(--s2-accent, CanvasText);
+      --primary-fg: var(--s2-bg-base, Canvas);
+      --negative: var(--s2-negative, #d33);
+      --notice: var(--s2-notice, #b60);
+      --radius: var(--s2-radius-default, 6px);
+    }
+    [hidden] { display: none !important; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; display: flex; flex-direction: column; color: var(--fg); font: 14px/1.45 var(--s2-font-family, system-ui, sans-serif); container-type: inline-size; }
+    header { padding: 12px 12px 0; }
+    h1 { font-size: 15px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+    h1 small { font-weight: normal; color: var(--fg-muted); font-size: 12px; overflow-wrap: anywhere; text-align: right; }
+    .tools { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+    @container (min-width: 480px) { .tools { grid-template-columns: minmax(0, 1fr) minmax(0, 12em); } }
+    input, select, textarea { font: inherit; font-size: 13px; color: inherit; background: var(--field); border: 1px solid var(--line); border-radius: var(--radius); padding: 5px 8px; min-width: 0; width: 100%; }
+    button { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: var(--radius); border: 1px solid transparent; background: transparent; color: inherit; cursor: pointer; }
+    :where(button, select, input, textarea, a):focus-visible { outline: 2px solid var(--primary-bg); outline-offset: 1px; }
+    .primary { background: var(--primary-bg); color: var(--primary-fg); font-weight: 600; }
+    button[disabled] { opacity: .4; cursor: default; }
+    main { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; }
+    .section { margin: 14px 0 2px; padding: 0 2px; font-size: 12px; font-weight: normal; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-muted); }
+    ul { list-style: none; margin: 0; padding: 0; }
+    .row { border-bottom: 1px solid var(--line); min-width: 0; }
+    .row:last-child { border-bottom: 0; }
+    .head { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 1em minmax(0, 1fr) auto; column-gap: 6px; align-items: start; width: 100%; padding: 10px 2px 2px; cursor: pointer; border-radius: var(--radius); }
+    .head:hover { background: var(--hover); }
+    .head:focus-visible { outline: 2px solid var(--primary-bg); outline-offset: -2px; }
+    .chev { color: var(--fg-muted); transition: transform .12s ease-in-out; line-height: 1.45; }
+    .row[data-open] .chev { transform: rotate(90deg); }
+    @media (prefers-reduced-motion: reduce) { .chev { transition: none; } }
+    .title { font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+    .row[data-open] .title { -webkit-line-clamp: unset; }
+    .type { font-size: 11px; color: var(--fg-muted); padding: 0 6px; border-radius: var(--s2-radius-pill, 999px); background: var(--chip); white-space: nowrap; max-width: 12em; overflow: hidden; text-overflow: ellipsis; }
+    .desc { margin: 2px 0 10px calc(1em + 8px); color: var(--fg-muted); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+    .row[data-open] .desc { -webkit-line-clamp: unset; }
+    .detail { margin: 0 0 12px calc(1em + 8px); min-width: 0; }
+    .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--fg-muted); margin-bottom: 6px; }
+    .meta .stale { color: var(--notice); }
+    .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+    .tag { font-size: 11px; padding: 0 6px; border-radius: var(--s2-radius-pill, 999px); background: var(--chip); }
+    .body { overflow-wrap: anywhere; }
+    .body :is(h2, h3, h4) { font-size: 13px; margin: 12px 0 4px; }
+    .body :is(p, ul, ol, pre, table, blockquote) { margin: 6px 0; }
+    .body ul, .body ol { padding-left: 1.3em; list-style: revert; }
+    .body pre { overflow-x: auto; padding: 8px; background: var(--chip); border-radius: var(--radius); font-size: 12px; }
+    .body code { font-size: 12px; }
+    .body table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 12px; }
+    .body :is(th, td) { border: 1px solid var(--line); padding: 2px 6px; text-align: left; vertical-align: top; }
+    .body blockquote { margin-left: 0; padding-left: 8px; border-left: 2px solid var(--line); color: var(--fg-muted); }
+    .link { all: unset; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+    .link:focus-visible { outline: 2px solid var(--primary-bg); }
+    .backlinks { font-size: 12px; color: var(--fg-muted); margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+    .empty { color: var(--fg-muted); padding: 16px 2px; }
+    .error { color: var(--negative); padding: 8px 12px 0; font-size: 12px; overflow-wrap: anywhere; }
+    footer { border-top: 1px solid var(--line); padding: 8px 12px 12px; display: grid; gap: 6px; }
+    footer textarea { min-height: 7.5em; resize: vertical; }
+    footer .row-actions { display: flex; align-items: center; gap: 8px; }
+    footer .row-actions .note { flex: 1; min-width: 0; font-size: 11px; color: var(--fg-muted); overflow-wrap: anywhere; }
+    a { color: inherit; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Knowledge base <small id="count" aria-live="polite"></small></h1>
+    <div class="tools" role="search">
+      <input id="q" type="search" placeholder="Search titles and text" aria-label="Search the knowledge base" autocomplete="off" />
+      <select id="type" aria-label="Type"><option value="">All types</option></select>
+    </div>
+  </header>
+  <div id="error" class="error" role="status" hidden></div>
+  <main id="list" aria-busy="true"></main>
+  <footer id="composer" hidden>
+    <label for="ask" class="section" style="margin:0">Ask or add</label>
+    <textarea id="ask" placeholder="Ask a question, or paste a source to ingest"></textarea>
+    <div class="row-actions">
+      <span class="note" id="askNote"></span>
+      <button type="button" class="primary" id="send">Send</button>
+    </div>
+  </footer>
+  <script>
+    const ROOT = document.querySelector('meta[name="llm-wiki-root"]').content;
+    const POLL_MS = 15000;
+    const bridge = typeof slicc === 'object' && slicc ? slicc : null;
+    const state = { q: '', type: '', open: null, concepts: [], types: [], details: new Map(), seq: 0 };
+
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+    function showError(text) {
+      $('error').hidden = !text;
+      $('error').textContent = text || '';
+    }
+
+    async function cgi(pathAndQuery) {
+      const res = await fetch(`cgi-bin/${pathAndQuery}`, { cache: 'no-store' });
+      if (res.headers.get('x-wiki') !== '1') throw new Error('This panel needs a SLICC whose sprinkles run cgi-bin/ (or a CGI server); run `wiki sprinkle` again.');
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    // ── markdown: escaped first, then a small subset; links to concepts open them here
+    function resolveId(href, from) {
+      if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#')) return null;
+      const clean = href.split('#')[0].split('?')[0];
+      if (!clean.endsWith('.md')) return null;
+      const base = clean.startsWith('/') ? [] : from.split('/').slice(0, -1);
+      for (const part of clean.replace(/^\/+/, '').split('/')) {
+        if (part === '..') base.pop();
+        else if (part && part !== '.') base.push(part);
+      }
+      return base.join('/').replace(/\.md$/, '');
+    }
+
+    function inline(text, from) {
+      let s = esc(text);
+      const codes = [];
+      s = s.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
+      s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) => {
+        const raw = href.replace(/&amp;/g, '&');
+        const id = resolveId(raw, from);
+        if (id) return `<button type="button" class="link" data-open="${esc(id)}">${label}</button>`;
+        if (/^https?:\/\//i.test(raw)) return `<a href="${esc(raw)}" target="_blank" rel="noopener">${label}</a>`;
+        return label;
+      });
+      s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
+      return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[Number(i)]}</code>`);
+    }
+
+    function markdown(md, from) {
+      const lines = String(md || '').replace(/\r\n/g, '\n').split('\n');
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        if (/^```/.test(line)) {
+          const buf = [];
+          for (i++; i < lines.length && !/^```/.test(lines[i]); i++) buf.push(lines[i]);
+          i++;
+          out.push(`<pre><code>${esc(buf.join('\n'))}</code></pre>`);
+          continue;
+        }
+        const h = /^(#{1,6})\s+(.*)$/.exec(line);
+        if (h) {
+          const level = Math.min(4, h[1].length + 1);
+          out.push(`<h${level}>${inline(h[2], from)}</h${level}>`);
+          i++;
+          continue;
+        }
+        if (/^\s*\|.*\|\s*$/.test(line)) {
+          const rows = [];
+          for (; i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i]); i++) rows.push(lines[i]);
+          const cells = (r) => r.trim().slice(1, -1).split('|').map((c) => c.trim());
+          const body = rows.filter((r) => !/^\s*\|[\s:|-]+\|\s*$/.test(r));
+          const [head, ...rest] = body;
+          out.push(`<table><thead><tr>${cells(head).map((c) => `<th>${inline(c, from)}</th>`).join('')}</tr></thead><tbody>${rest.map((r) => `<tr>${cells(r).map((c) => `<td>${inline(c, from)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+          continue;
+        }
+        if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
+          const ordered = /^\s*\d+\./.test(line);
+          const items = [];
+          for (; i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i]); i++) items.push(lines[i].replace(/^\s*([-*+]|\d+\.)\s+/, ''));
+          const tag = ordered ? 'ol' : 'ul';
+          out.push(`<${tag}>${items.map((t) => `<li>${inline(t, from)}</li>`).join('')}</${tag}>`);
+          continue;
+        }
+        if (/^>\s?/.test(line)) {
+          const buf = [];
+          for (; i < lines.length && /^>\s?/.test(lines[i]); i++) buf.push(lines[i].replace(/^>\s?/, ''));
+          out.push(`<blockquote>${inline(buf.join(' '), from)}</blockquote>`);
+          continue;
+        }
+        if (!line.trim()) {
+          i++;
+          continue;
+        }
+        const buf = [];
+        for (; i < lines.length && lines[i].trim() && !/^(```|#{1,6}\s|\s*\||\s*([-*+]|\d+\.)\s|>)/.test(lines[i]); i++) buf.push(lines[i]);
+        out.push(`<p>${inline(buf.join(' '), from)}</p>`);
+      }
+      return out.join('');
+    }
+
+    // ── rendering
+    function groupOf(id) {
+      const i = id.indexOf('/');
+      return i < 0 ? '' : id.slice(0, i);
+    }
+
+    function detailHtml(c) {
+      const d = state.details.get(c.id);
+      if (!d) return '<div class="detail"><div class="meta">Loading…</div></div>';
+      if (d.error) return `<div class="detail"><div class="error" style="padding:0">${esc(d.error)}</div></div>`;
+      const k = d.concept;
+      const meta = [
+        `<span>${esc(k.id)}</span>`,
+        k.status ? `<span>${esc(k.status)}</span>` : '',
+        k.trust_tier ? `<span>${esc(k.trust_tier.replace(/_/g, ' '))}</span>` : '',
+        k.stale ? '<span class="stale">stale</span>' : '',
+        k.resource && /^https?:\/\//i.test(k.resource) ? `<a href="${esc(k.resource)}" target="_blank" rel="noopener">resource ↗</a>` : '',
+      ].join('');
+      const tags = (k.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('');
+      const back = d.backlinks.length
+        ? `<div class="backlinks"><span>Linked from</span>${d.backlinks.map((b) => `<button type="button" class="link" data-open="${esc(b)}">${esc(b)}</button>`).join('')}</div>`
+        : '';
+      return `<div class="detail"><div class="meta">${meta}</div>${tags ? `<div class="tags">${tags}</div>` : ''}<div class="body">${markdown(k.body, k.id)}</div>${back}</div>`;
+    }
+
+    function row(c) {
+      const li = document.createElement('li');
+      li.className = 'row';
+      li.dataset.id = c.id;
+      const open = state.open === c.id;
+      if (open) li.dataset.open = '';
+      const title = c.title || c.id.split('/').pop();
+      li.innerHTML = `
+        <button type="button" class="head" aria-expanded="${open}">
+          <span class="chev" aria-hidden="true">›</span>
+          <span class="title">${esc(title)}</span>
+          ${c.type ? `<span class="type" title="${esc(c.type)}">${esc(c.type)}</span>` : ''}
+        </button>
+        ${c.description ? `<div class="desc">${esc(c.description)}</div>` : '<div class="desc"></div>'}
+        ${open ? detailHtml(c) : ''}`;
+      li.querySelector('.head').onclick = () => toggle(c.id);
+      return li;
+    }
+
+    function render() {
+      const list = $('list');
+      list.setAttribute('aria-busy', 'false');
+      const n = state.concepts.length;
+      const filtered = state.q || state.type;
+      $('count').textContent = `${n} ${n === 1 ? 'concept' : 'concepts'}${filtered ? ' match' : ''}`;
+      const sel = $('type');
+      const want = ['', ...state.types];
+      if (sel.options.length !== want.length || want.some((t, i) => sel.options[i].value !== t)) {
+        sel.replaceChildren(...want.map((t) => Object.assign(document.createElement('option'), { value: t, textContent: t || 'All types' })));
+        sel.value = state.types.includes(state.type) ? state.type : '';
+      }
+      if (!n) {
+        list.replaceChildren(Object.assign(document.createElement('div'), { className: 'empty', textContent: filtered ? 'No concepts match.' : 'No concepts yet.' }));
+        return;
+      }
+      const groups = new Map();
+      for (const c of state.concepts) {
+        const g = groupOf(c.id);
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push(c);
+      }
+      const parts = [];
+      for (const [g, items] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
+        const h = Object.assign(document.createElement('h2'), { className: 'section', textContent: g || 'Top level' });
+        const ul = document.createElement('ul');
+        ul.replaceChildren(...items.map(row));
+        parts.push(h, ul);
+      }
+      list.replaceChildren(...parts);
+      updateNote();
+    }
+
+    async function toggle(id) {
+      state.open = state.open === id ? null : id;
+      saveState();
+      render();
+      if (state.open) await loadDetail(id);
+    }
+
+    async function openConcept(id) {
+      if (!state.concepts.some((c) => c.id === id)) {
+        state.q = '';
+        state.type = '';
+        $('q').value = '';
+        await load();
+      }
+      state.open = id;
+      saveState();
+      render();
+      await loadDetail(id);
+      const el = document.querySelector(`.row[data-id="${CSS.escape(id)}"] .head`);
+      if (el) {
+        el.scrollIntoView({ block: 'nearest' });
+        el.focus();
+      }
+    }
+
+    async function loadDetail(id, force) {
+      if (!force && state.details.has(id) && !state.details.get(id).error) return render();
+      try {
+        const d = await cgi(`show/${id.split('/').map(encodeURIComponent).join('/')}`);
+        state.details.set(id, d);
+      } catch (e) {
+        state.details.set(id, { error: `Can't open ${id}: ${e.message || e}` });
+      }
+      if (state.open === id) render();
+    }
+
+    async function load() {
+      const seq = ++state.seq;
+      const params = new URLSearchParams();
+      if (state.q) params.set('text', state.q);
+      if (state.type) params.set('type', state.type);
+      try {
+        const data = await cgi(`concepts${params.size ? `?${params}` : ''}`);
+        if (seq !== state.seq) return;
+        state.concepts = data.concepts;
+        state.types = data.types;
+        showError('');
+        render();
+      } catch (e) {
+        if (seq !== state.seq) return;
+        $('list').setAttribute('aria-busy', 'false');
+        showError(`Can't read the knowledge base at ${ROOT}: ${e.message || e}`);
+      }
+    }
+
+    // ── composer: one lick to the agent; the frame's text is data for it
+    function updateNote() {
+      const c = state.concepts.find((x) => x.id === state.open);
+      $('askNote').textContent = c ? `About ${c.title || c.id}` : '';
+    }
+
+    function send() {
+      const text = $('ask').value.trim();
+      if (!text || !bridge) return;
+      bridge.lick({ action: 'ask', data: { text, root: ROOT, ...(state.open ? { concept: state.open } : {}) } });
+      $('ask').value = '';
+      $('askNote').textContent = 'Sent to the agent.';
+    }
+
+    // ── state across reloads
+    function saveState() {
+      if (bridge && bridge.setState) bridge.setState({ q: state.q, type: state.type, open: state.open });
+    }
+
+    async function start() {
+      if (bridge) {
+        $('composer').hidden = false;
+        try {
+          const s = (bridge.getState && (await bridge.getState())) || {};
+          state.q = typeof s.q === 'string' ? s.q : '';
+          state.type = typeof s.type === 'string' ? s.type : '';
+          state.open = typeof s.open === 'string' ? s.open : null;
+          $('q').value = state.q;
+        } catch {}
+      }
+      await load();
+      if (state.open) loadDetail(state.open);
+    }
+
+    let timer = null;
+    $('q').addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        state.q = $('q').value.trim();
+        saveState();
+        load();
+      }, 250);
+    });
+    $('type').addEventListener('change', () => {
+      state.type = $('type').value;
+      saveState();
+      load();
+    });
+    $('list').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-open]');
+      if (b) openConcept(b.dataset.open);
+    });
+    $('send').onclick = send;
+    $('ask').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send();
+    });
+    setInterval(() => {
+      if (!document.hidden) load();
+    }, POLL_MS);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) load();
+    });
+    start();
+  </script>
+</body>
+</html>

@@ -1,141 +1,85 @@
 ---
 name: llm-wiki
-description: Build and maintain a persistent, interlinked markdown wiki knowledge base
-  from raw sources. Use when the user wants to create a knowledge base, build a wiki,
-  ingest articles or papers into a KB, query accumulated knowledge, organize research
-  notes, lint a wiki for broken links and orphan pages, or point the bundled wiki CLI
-  at a different root (`wiki config`, WIKI_ROOT, --root). Triggers on mentions of
-  knowledge base, wiki, KB, ingest, research notes, or personal wiki.
+description: Build and maintain a persistent knowledge base in the Open Knowledge Format (OKF) — a folder of markdown concepts with YAML frontmatter — using the okf CLI as its engine and a wiki helper for the bundle root, log.md and a browsing panel. Use when the user wants to create a knowledge base or wiki, ingest an article, paper, transcript or note into it, ask what it knows, organize research notes, validate or lint it for broken links, missing types and stale concepts, find what links to a page, browse it in a SLICC panel, or move an older llm-wiki tree to OKF. Triggers on knowledge base, KB, wiki, OKF, Open Knowledge Format, okf validate, ingest, research notes, personal wiki, concept, backlinks.
+allowed-tools: bash
 ---
 
-# LLM Wiki
+# LLM Wiki (OKF)
 
-Persistent markdown wiki that sits between curated **raw sources** and **questions**.
-Directory layout is defined by the user's schema (e.g. `WIKI.md`). This skill defines
-**behaviors**, not fixed paths — always read the schema first.
+A knowledge base is an [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle: a directory tree of **concepts**, one markdown file each, with YAML frontmatter. A concept's id is its path without `.md`. `index.md` and `log.md` are reserved at every level. Two commands do the work:
 
-## Non-negotiables
-
-1. **Read the wiki schema before editing.** If none exists, ask whether to create a minimal one.
-2. **Never modify raw sources.** All synthesis lives in the wiki layer only.
-3. **On every ingest:** Integrate into wiki pages, cross-links, update **index**, append to **log**.
-4. **Flag contradictions explicitly.** Update pages and record conflicts with dates.
-5. **On query:** Read `index.md` first to discover pages. Synthesize with citations. File the answer as a durable wiki page.
-6. **On lint:** Find stale claims, orphan pages, missing pages, broken links, gaps.
-7. **Log keywords are exactly `ingest`, `query`, or `lint`** — never synonyms. Format: `## [YYYY-MM-DD] ingest | <title>`
+- `okf` (`@ai-ecoverse/wasi-okf`) creates, validates, lints, indexes, lists, shows, searches and graphs a bundle, and prints JSON on stdout.
+- `wiki` (this skill) keeps the bundle root, runs okf on it, writes `log.md` entries, and installs the panel.
 
 ## Setup
 
-When the user asks to set up an LLM wiki, or when this skill is first activated:
-
-1. **Locate or create the wiki root.** Ask where the knowledge base lives (e.g. `/mnt/kb`).
-   Use an existing wiki if there is one. If starting fresh, create `<root>/WIKI.md`
-   (schema), `<root>/index.md` (empty catalog), and `<root>/log.md` (empty log).
-   Persist the chosen root with `wiki config set root <path>` so the bundled CLI
-   agrees with the schema (see [Wiki root (CLI)](#wiki-root-cli)).
-2. **Write the schema.** Use the default in [`references/wiki-schema.md`](references/wiki-schema.md)
-   unless the user wants a different layout (that file also lists the constants to
-   keep in sync with the bundled CLI).
-
-Running under SLICC? See [`references/slicc-integration.md`](references/slicc-integration.md)
-to wire the sprinkle browser, the `wiki-ops` scoop, and the `wiki.jsh` CLI. None of
-that is required for plain-markdown use.
-
-## Wiki root (CLI)
-
-The bundled `wiki.jsh` CLI (`wiki search`, `wiki list`, `wiki read`, …) resolves
-its wiki root in this order, highest priority first:
-
-1. `--root <path>` — per-invocation flag, accepted before or after the subcommand
-2. `WIKI_ROOT` environment variable
-3. `root` key in the config file
-4. Built-in default `/mnt/kb` (unchanged)
-
-Config file: `${HOME}/.config/wiki/config.json` (override the path with `WIKI_CONFIG`).
-It lives **outside the skill directory** so `upskill update` cannot destroy it.
-Unknown keys are preserved on write. A missing, empty, or malformed file is ignored
-(with a warning that names the file) and resolution falls through to the next layer.
-
 ```bash
-wiki config                 # resolved root, which layer, config path
-wiki config get root
-wiki config set root /path  # path must exist and be a directory
-wiki config unset root
-wiki config path
+pnpm add -g @ai-ecoverse/wasi-okf <this skill's folder>   # okf and wiki on PATH
+okf init ~/kb                                             # or use an existing bundle
+wiki config set root ~/kb                                 # --root and WIKI_ROOT override it
+wiki okf validate                                         # okf validate <root>
 ```
 
-`wiki help` and `wiki stats` print the resolved root and which layer it came from.
-If a page lookup fails against a tree with zero pages, the error names the root
-and source so a wrong/empty tree is obvious — not a missing page.
+`wiki --help` lists every command. `wiki okf <command> [args]` is `okf <command> <root> [args]`, and exits with okf's status: 0 ok, 1 validation error, 2 I/O error, 4 usage error.
 
-## Wikilink validation
+## Rules
 
-Apply whenever wiki pages are created or updated (ingest and query):
+1. **Every concept has `type`.** It is the only required key. Add `title`, a one-sentence `description` and `tags`, because search, indexes and the panel show them.
+2. **Never edit raw sources.** Keep them outside the bundle, or under `references/`, and point to them from `sources`.
+3. **Link with bundle-relative paths**, such as `[events](/tables/events.md)`. A link to a missing concept is allowed: it marks knowledge not yet written.
+4. **Record provenance.** Use `sources: [{ id, resource, title }]` and attribute claims with footnotes keyed by `id` (`[^id]`). Set `generated: { by: <agent>/<model>, at: <ISO time> }` on what you write. Leave `verified` for whoever checks it; use `human:<id>` only when a person confirmed it.
+5. **Log every change** with `wiki log <Kind> <message>` (kinds: Creation, Update, Deprecation). It keeps OKF's format: date headings, newest first.
+6. **Validate after every change.** Run `wiki okf validate` and fix every ERROR before you report back.
+7. **`okf index` rewrites `index.md` in every directory.** Run it only on a bundle whose indexes okf owns. Ask before running it over hand-written indexes.
 
-- Verify every `[[wikilink]]` in created/updated pages resolves to an existing page in `index.md`.
-- For any that do not, either create a stub page or flag it as a missing page in the log.
-- Record the missing-page count in the log entry.
+A concept:
+
+```markdown
+---
+type: Paper
+title: Attention Is All You Need
+description: The Transformer, a sequence model built only from attention.
+tags: [ml, transformers]
+sources:
+  - { id: arxiv, resource: https://arxiv.org/abs/1706.03762, title: arXiv 1706.03762 }
+generated: { by: sliccy/claude, at: 2026-11-19T10:00:00Z }
+---
+
+The model drops recurrence entirely.[^arxiv] See [self-attention](/concepts/self-attention.md).
+
+[^arxiv]: arXiv 1706.03762
+```
 
 ## Ingest
 
-1. Locate the new source. Read it (do not edit).
-2. **Extract entities, claims, and relationships; map each to a wiki page.** Work
-   concretely — turn the source into a small mapping table before writing anything:
-
-   | Extracted | Type | Maps to |
-   |-----------|------|---------|
-   | RAII | entity | `tech/raii.md` (new page) |
-   | "RAII binds resource lifetime to object scope" | claim | a sentence in `tech/raii.md`, with `([source: …])` |
-   | RAII → destructors | relationship | `[[destructors]]` link, added on both pages |
-
-   Entities become page files, claims become cited sentences in the page body, and
-   relationships become `[[wikilinks]]` written on **both** endpoints.
-3. Create or update the affected pages with outbound and inbound links.
-4. Update the **index** (one-line blurbs, categories, links).
-5. Validate wikilinks per [Wikilink validation](#wikilink-validation).
-6. Append to the **log** with keyword `ingest`.
-
-See [`references/examples.md`](references/examples.md) for a full worked ingest —
-log entry, wiki page, and matching index entry.
+1. Read the source. Don't change it.
+2. List what it adds: entities and ideas (each becomes a concept), claims (cited sentences in a concept), and relationships (links, written on both concepts).
+3. Look up each candidate before you create it, with `wiki okf search --text <name>` and `wiki okf show <id>`. Update an existing concept rather than adding a duplicate.
+4. Write or update the concepts (rules 1–4).
+5. When two sources disagree, keep both claims with their footnotes. Add `> CONFLICT <date>: <what disagrees>` to each concept involved.
+6. Run `wiki okf validate`, then `wiki log Update "<what changed, with links>"`.
 
 ## Query
 
-1. **Read `index.md` first** — discover which pages exist.
-2. Read the relevant topic pages; follow cross-links.
-3. Synthesize with **wiki-backed citations** (page paths or section anchors).
-4. **File the answer as a wiki page.** Update the index. Produce standalone output if also requested.
-5. Validate wikilinks per [Wikilink validation](#wikilink-validation).
-6. Append to the **log** with keyword `query`.
-
-See [`references/examples.md`](references/examples.md) for a worked query — log entry
-and filed answer page.
+1. Find candidates: `wiki okf search --text <words>`, `--tag <t>` or `--type <T>`, or read `index.md`.
+2. Read them with `wiki okf show <id>` (the frontmatter and body as JSON). Follow links, and `wiki okf backlinks <id>` for what points back.
+3. Answer with citations to concept ids. When the answer is worth keeping, file it as a concept (`type: Answer` or a better fit) and log it.
 
 ## Lint
 
-1. **Scan** the index and category folders for: broken wikilinks, missing pages,
-   orphan pages (no inbound links), stale claims, and contradictions.
-2. **Remediate by finding type** (apply fixes only with user consent; otherwise present them):
+`wiki okf lint` reports missing recommended fields and style problems as warnings. `wiki okf validate` reports spec violations. `wiki okf graph` gives the link graph; concepts with no inbound edges are orphans. A concept is stale when its `stale_after` time has passed. Present the findings grouped by kind. Fix only what the user agrees to, then validate and log again.
 
-   | Finding | Fix |
-   |---------|-----|
-   | Broken wikilink | Repoint to the correct page, or create a stub, or flag as missing in the log. |
-   | Missing page | Create a stub page and add it to the index, or record it in the log. |
-   | Orphan page | Add inbound `[[links]]` from related pages, or flag for archival. |
-   | Stale claim | Date it and, if newer sources disagree, add a contradiction marker. |
-   | Contradiction | Add `> ⚠ CONFLICT [YYYY-MM-DD]: <description>` to **both** pages. |
+## The panel (SLICC)
 
-3. **Re-validate after fixing:** rerun step 1 to confirm no fix introduced a new
-   broken link or orphan. Repeat until the scan is clean.
-4. **Error recovery:** if a page cannot be read or a fix cannot be applied, skip it,
-   keep going, and record the failure in the log — never leave the index or log
-   half-updated. If interrupted mid-fix, append a corrective log entry rather than
-   rewriting an earlier one.
-5. Suggest interesting connections and further questions surfaced by the scan.
-6. Append to the **log** with keyword `lint`, including counts per finding type.
+```bash
+wiki sprinkle                    # ~/sprinkles/llm-wiki/ (SLICC 6: /shared/sprinkles/llm-wiki/)
+panel open sprinkle:llm-wiki     # SLICC 7
+```
 
-## References
+The panel lists concepts grouped by folder, with search and a type filter. Opening a row shows its metadata, tags, body, and what links to it; links to other concepts open them in the panel. It runs okf through its own `cgi-bin/` (`concepts`, `show`; read-only GETs, see [references/cgi-bin.md](references/cgi-bin.md)), so browsing needs no agent turn. Run `wiki sprinkle` again after the root moves.
 
-- [`references/wiki-schema.md`](references/wiki-schema.md) — default `WIKI.md` schema template.
-- [`references/examples.md`](references/examples.md) — worked ingest and query outputs.
-- [`references/slicc-integration.md`](references/slicc-integration.md) — optional SLICC sprinkle / scoop / CLI wiring.
-- [`references/wiki-ops-brief.md`](references/wiki-ops-brief.md) — system prompt for the `wiki-ops` scoop.
+Its text box sends a lick on `sprinkle:llm-wiki` with action `ask` and body `{ text, root, concept? }`, where `concept` is the open concept's id. Treat the text as a request from the user: answer it with Query, or Ingest it when it is a source. The body comes from the frame, so pass ids to commands as single arguments.
+
+## Moving an llm-wiki tree to OKF
+
+okf won't load a bundle in which any `.md` file other than `index.md` and `log.md` has no frontmatter. It stops at the first one (`parse README.md: no YAML frontmatter block found`). A page-per-topic llm-wiki tree with `[[wikilinks]]` therefore needs migrating. Follow [references/migrate-from-llm-wiki.md](references/migrate-from-llm-wiki.md): report first, then one page at a time with the user's consent.

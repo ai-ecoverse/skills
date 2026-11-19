@@ -1,0 +1,17 @@
+{
+  "name": "@ai-ecoverse/llm-wiki",
+  "version": "2.0.0",
+  "private": true,
+  "description": "The wiki CLI for an Open Knowledge Format (OKF) knowledge base: the bundle root, okf on it, log.md entries and a SLICC panel. Needs okf (@ai-ecoverse/wasi-okf) on PATH.",
+  "bin": {
+    "wiki": "scripts/wiki.jsh"
+  },
+  "files": [
+    "scripts",
+    "templates",
+    "references",
+    "SKILL.md",
+    "LICENSE"
+  ],
+  "license": "MIT"
+}
