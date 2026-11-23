@@ -78,7 +78,8 @@ CLI doesn't add yet; create those in the portal.
 In SLICC 7: `cd /opt/user && pnpm add <path-to>/skills/apple-developer`.
 On a host: install [jsh](https://github.com/ai-ecoverse/slicc-jsh), then
 `npm install -g "$(npm pack ./skills/apple-developer)"`. Chrome must have a DevTools
-port (`SLICC_CDP_URL`, default `http://127.0.0.1:9222`) and a signed-in
+port, found by itself (SLICC's Chrome, or `127.0.0.1:9222`) unless `SLICC_CDP_URL` names
+one, and a signed-in
 https://developer.apple.com/account tab.
 
 See `references/endpoints.md` for the API, how it was found, and how to re-capture it

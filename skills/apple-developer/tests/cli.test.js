@@ -66,7 +66,7 @@ function portalSite(pages) {
   return { reads, writes, fetch };
 }
 
-async function run(args, { pages = {}, fsImpl } = {}) {
+async function run(args, { pages = {}, fsImpl, findTab, env = {} } = {}) {
   const site = portalSite(pages);
   const out = [];
   const err = [];
@@ -90,7 +90,7 @@ async function run(args, { pages = {}, fsImpl } = {}) {
       date: (v) => String(v),
     },
     'sliccy:browser': {
-      findTab: async () => ({ targetId: 'DEV' }),
+      findTab: findTab || (async () => ({ targetId: 'DEV' })),
       evalAsync: async (_tab, code) => new AsyncFunction('fetch', `return ${code}`)(site.fetch),
     },
     fs: fsImpl || fs,
@@ -102,8 +102,8 @@ async function run(args, { pages = {}, fsImpl } = {}) {
   argv.parseFlags = () => parseFlags(args);
   const proc = {
     argv,
-    env: {},
-    versions: {},
+    env,
+    versions: { jsh: '0.64.0' },
     pid: 4242,
     stdout: { write: (s) => out.push(String(s)) },
     exit: (code) => {
@@ -295,4 +295,32 @@ test('profile download removes its temp file when the rename fails', async () =>
     ['rename', '/w/dir.4242.tmp', '/w/dir'],
     ['unlink', '/w/dir.4242.tmp'],
   ]);
+});
+
+// On a host, sliccy-browser finds Chrome (SLICC's on a random port, or 9222)
+// only while SLICC_CDP_URL is unset, so the script must not default it; and a
+// failed discovery is one line, not sliccy-browser's multi-line "Pass --cdp".
+// The error text is sliccy-browser 0.1.44's (src/discover.js).
+test('a host run leaves SLICC_CDP_URL unset and reports a failed discovery on one line', async () => {
+  const env = {};
+  const seen = [];
+  const r = await run(['teams'], {
+    env,
+    findTab: async () => {
+      seen.push(env.SLICC_CDP_URL);
+      throw new Error(
+        'no debugger is connected\n- SLICC_CDP_URL: not set\n- slicc browsers --json: slicc not on PATH\n' +
+          '- DevToolsActivePort: no DevToolsActivePort files under slicc profile dirs\n' +
+          '- 127.0.0.1:9222: no answer on /json/version\n'
+      );
+    },
+  });
+  is(seen.length, 1);
+  is(seen[0], undefined, 'SLICC_CDP_URL was not defaulted to 9222');
+  is(r.code, 1);
+  is(r.stderr.split('\n').length, 1, r.stderr);
+  ok(r.stderr.startsWith('cannot find Chrome DevTools (tried slicc browsers --json: '), r.stderr);
+  ok(r.stderr.includes('127.0.0.1:9222: no answer on /json/version'), r.stderr);
+  ok(r.stderr.includes('set SLICC_CDP_URL=http://127.0.0.1:<port>'), r.stderr);
+  ok(!r.stderr.includes('--cdp'), r.stderr);
 });

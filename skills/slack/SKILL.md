@@ -97,7 +97,8 @@ Workspace resolution order:
 
 `slack` and `slack-ext` also run on macOS or Linux under
 [jsh](https://github.com/ai-ecoverse/slicc-jsh). They drive a logged-in Slack tab in a Chrome
-that runs with a DevTools port (`SLICC_CDP_URL`, default `http://127.0.0.1:9222`).
+that runs with a DevTools port. They find it themselves (SLICC's Chrome, or `127.0.0.1:9222`),
+or take `SLICC_CDP_URL`; see [references/jsh-host.md](references/jsh-host.md#finding-chrome).
 `npm install -g ./skills/slack` puts both on PATH. There, `slack watch <channel> '<command>'`
 runs a callback for each new message, as `ntfy sub` does, with the message in `$SLACK_TEXT`,
 `$SLACK_RAW`, etc.:
