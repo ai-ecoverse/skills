@@ -6,8 +6,8 @@ tab in a Chrome that is already running with a DevTools port; they don't launch
 Chrome. There, `sliccy:browser` is
 [`@ai-ecoverse/sliccy-browser`](https://www.npmjs.com/package/@ai-ecoverse/sliccy-browser),
 a dependency in this folder's `package.json` that needs Node 24 or later. It
-connects to `SLICC_CDP_URL`, which the scripts default to
-`http://127.0.0.1:9222` on a host.
+connects to `SLICC_CDP_URL`, or finds Chrome when that is unset (see
+[Finding Chrome](#finding-chrome)).
 
 ## Install
 
@@ -21,11 +21,35 @@ npm install -g "$(npm pack ./skills/slack)"   # or installs a copy
 # or: pnpm add -g ./skills/slack
 
 # Chrome on a DevTools port, with app.slack.com open and logged in:
+# SLICC's Chrome is found by itself; another Chrome:
 #   chrome --remote-debugging-port=9222
 # For another port or host:
 #   export SLICC_CDP_URL=http://127.0.0.1:9333   (or the ws:// URL from /json/version)
 slack workspaces
 slack-ext --ws=T06DUTYDQ status W5BPKRLUA
+```
+
+## Finding Chrome
+
+With `SLICC_CDP_URL` set, the scripts connect there and nowhere else. Unset,
+`@ai-ecoverse/sliccy-browser` looks, in this order:
+
+1. `slicc browsers --json`, when `slicc` is on `PATH`. It prefers a Chrome on a
+   SLICC profile.
+2. A `DevToolsActivePort` file under SLICC's profile directories (on macOS
+   `~/Library/Application Support/Slicc/profiles/*`). That is how a Chrome
+   started with `--remote-debugging-port=0` is found: it listens on a random
+   port and writes it there.
+3. `http://127.0.0.1:9222`.
+
+Each endpoint must be a loopback `ws://` URL that answered `/json/version`
+(for a `DevToolsActivePort`, with the same browser id as the file). A Chrome
+found this way refuses SLICC's own pages (`sliccy.ai`, `chrome://…`); Slack
+tabs are not affected. If nothing answers, the command prints one line with
+what it tried and exits 1:
+
+```
+Error: cannot find Chrome DevTools (tried slicc browsers --json: slicc not on PATH; DevToolsActivePort: no DevToolsActivePort files under slicc profile dirs; 127.0.0.1:9222: no answer on /json/version); start Chrome with --remote-debugging-port=9222, or set SLICC_CDP_URL=http://127.0.0.1:<port>
 ```
 
 The scripts start with `#!/usr/bin/env jsh`, and `package.json` names them as

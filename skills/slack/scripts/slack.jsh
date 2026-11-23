@@ -30,9 +30,28 @@ const browser = require('sliccy:browser');
 // `process.versions.jsh` is set by both jsh runtimes; SLICC 6's realm reports
 // only `process.versions.node` (slicc realm-node-shims.ts, checked 2026-11-04).
 const JSH = Boolean(process.versions && process.versions.jsh);
-// On a host, Chrome's default DevTools port unless SLICC_CDP_URL names another.
-// sliccy-browser reads it when it first connects.
-if (JSH && process.env && !process.env.SLICC_CDP_URL) process.env.SLICC_CDP_URL = 'http://127.0.0.1:9222';
+// On a host, sliccy-browser finds Chrome itself when SLICC_CDP_URL is unset:
+// `slicc browsers --json`, then DevToolsActivePort under SLICC's profile dirs
+// (for a Chrome started with --remote-debugging-port=0), then 127.0.0.1:9222.
+// Don't default SLICC_CDP_URL to 9222 here: that turns discovery off (seen 2026-11-23:
+// SLICC's Chrome listened on a random port, nothing on 9222).
+//
+// When it can't reach Chrome, its error spans several lines and says "Pass
+// --cdp", which this CLI has no flag for. cdpFailureHint() turns that into one
+// line: what was tried, and how to point the CLI at Chrome. Any other error
+// gives null and is left alone.
+function cdpFailureHint(err) {
+  const message = String((err && err.message) || err || '');
+  const cdp = /^(no debugger is connected|CDP connection (failed|timed out)|unsupported CDP URL|json\/version)/;
+  if (!cdp.test(message) && !message.includes('does not launch Chrome')) return null;
+  const lines = message.split('\n').map((line) => line.trim()).filter(Boolean);
+  const env = (process.env && process.env.SLICC_CDP_URL) || '';
+  if (env.trim()) {
+    return `cannot reach Chrome DevTools at SLICC_CDP_URL=${env.trim()} (${lines[0]}); check that Chrome is listening there, or unset SLICC_CDP_URL to find it automatically`;
+  }
+  const tried = lines.filter((l) => l.startsWith('- ') && l !== '- SLICC_CDP_URL: not set').map((l) => l.slice(2));
+  return `cannot find Chrome DevTools (tried ${tried.length ? tried.join('; ') : lines[0]}); start Chrome with --remote-debugging-port=9222, or set SLICC_CDP_URL=http://127.0.0.1:<port>`;
+}
 
 // --- Tab management ---
 
@@ -3579,4 +3598,12 @@ if (!commands[cmd]) {
   process.exit(1);
 }
 
-const result = await commands[cmd](args, globalFlags);
+try {
+  await commands[cmd](args, globalFlags);
+} catch (err) {
+  if (err && err.name === 'NodeExitError') throw err;
+  const hint = cdpFailureHint(err);
+  if (!hint) throw err;
+  console.error(`Error: ${hint}`);
+  process.exit(1);
+}
