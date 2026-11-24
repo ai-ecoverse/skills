@@ -19,6 +19,10 @@ get a token, open Outlook in the browser and retry. The token and mailbox timezo
 cached in `~/.local/share/outlook/` (`$XDG_DATA_HOME/outlook/`); the legacy
 `/shared/.outlook-token` is still read as a fallback.
 
+## On a host: jsh over Chrome DevTools
+
+`outlook` also runs on macOS or Linux under [jsh](https://github.com/ai-ecoverse/slicc-jsh), taking the token from an `outlook.office.com` tab in a Chrome with a DevTools port (`SLICC_CDP_URL`, else found). `npm install -g ./skills/outlook` puts it on PATH. See [references/jsh-host.md](references/jsh-host.md).
+
 Full flag-by-flag reference: [references/COMMANDS.md](references/COMMANDS.md).
 Implementation notes: [references/internals.md](references/internals.md).
 

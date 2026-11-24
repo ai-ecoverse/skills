@@ -1,3 +1,4 @@
+#!/usr/bin/env jsh
 // outlook.jsh — Microsoft Outlook CLI for SLICC agents
 // Uses MSAL tokens from the Outlook browser tab's localStorage.
 //

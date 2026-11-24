@@ -3,12 +3,13 @@ import path from 'node:path';
 import test, { is } from 'tst';
 import { load } from './extract.js';
 import { nodeFs } from './node-fs.js';
+import { readScript } from './script.js';
 
 // outlook caches its Graph/Outlook bearer token in ~/.local/share/outlook/token with Node's fs
 // (fs.promises), which slicc-jsh (SLICC 7) and SLICC 6 both serve; the SLICC 6
 // promise dialect fails under Node semantics (ai-ecoverse/skills#487). Runs
 // the shipped token functions with the browser side stubbed.
-const SOURCE = fs.readFileSync(path.join(process.cwd(), 'scripts/outlook.jsh'), 'utf8');
+const SOURCE = readScript(path.join(process.cwd(), 'scripts/outlook.jsh'));
 const TOKEN_PATH = '/home/u/.local/share/outlook/token';
 const LEGACY_TOKEN_PATH = '/shared/.outlook-token';
 
