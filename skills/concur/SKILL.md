@@ -99,11 +99,11 @@ These hit the public-API surface at `www-us2.api.concursolutions.com/api/v3.0/*`
 
 | Command | Description |
 |---|---|
-| `concur reports-v3 [--limit=N] [--offset=N] [--user=<email>] [--modifiedAfter=<iso>]` | All reports (every status, full history). |
+| `concur reports-v3 [--limit=N] [--offset=N] [--user=<email>] [--modifiedAfter=<date>] [--modifiedBefore=<date>] [--createdAfter=<date>] [--createdBefore=<date>]` | All reports (every status, full history). Date flags take `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS` and are sent as `modifiedDateAfter`/`modifiedDateBefore`/`createDateAfter`/`createDateBefore`. |
 | `concur report-v3 <reportId>` | Single report header + custom fields, OrgUnit, totals, status. |
 | `concur entries-v3 [--reportId=<id>] [--limit=N] [--offset=N]` | Expense line items, optionally filtered to one report. |
 | `concur attendees-v3 [--limit=N]` | Saved attendees from the user's address book. |
-| `concur digests [--limit=N] [--user=<email>]` | Lightweight digest list (less data than `reports-v3`). |
+| `concur digests [--limit=N] [--user=<email>] [--modifiedAfter=<date>] [--modifiedBefore=<date>] [--createdAfter=<date>] [--createdBefore=<date>]` | Lightweight digest list (less data than `reports-v3`); same date flags. |
 | `concur locations [--name=<prefix>] [--country=<ISO>] [--limit=N]` | Concur location reference data. |
 
 ### Attendees

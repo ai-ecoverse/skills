@@ -1417,8 +1417,8 @@ const commands = {
   // -- v3.0 REST API (public Concur Platform API, cookie-auth friendly) --
 
   async 'reports-v3'(...args) {
-    const opts = parseFlags(args, { limit: '25', offset: '', user: '', modifiedAfter: '' });
-    const qs = buildQS({ limit: opts.limit, offset: opts.offset, user: opts.user, modifiedAfter: opts.modifiedAfter });
+    const opts = parseFlags(args, { limit: '25', offset: '', user: '' });
+    const qs = buildQS({ limit: opts.limit, offset: opts.offset, user: opts.user, ...v3DateFilters(opts) });
     return pageFetch(`${HOST_API}/api/v3.0/expense/reports${qs}`);
   },
 
@@ -1441,7 +1441,7 @@ const commands = {
 
   async digests(...args) {
     const opts = parseFlags(args, { limit: '25', offset: '', user: '' });
-    const qs = buildQS({ limit: opts.limit, offset: opts.offset, user: opts.user });
+    const qs = buildQS({ limit: opts.limit, offset: opts.offset, user: opts.user, ...v3DateFilters(opts) });
     return pageFetch(`${HOST_API}/api/v3.0/expense/reportdigests${qs}`);
   },
 
@@ -1675,6 +1675,7 @@ const commands = {
         'concur reports                                # GraphQL: active reports (rich)',
         'concur reports-v3                             # REST v3: all reports (history)',
         'concur reports-v3 --limit=50',
+        'concur reports-v3 --modifiedAfter=2026-01-01 --createdBefore=2026-06-01',
         'concur report A1B2C3D4E5F60718293A            # GraphQL: full detail',
         'concur report-v3 A1B2C3D4E5F60718293A         # REST v3: report header',
         'concur entries-v3 --reportId=A1B2C3D4E5F60718293A',
@@ -1708,6 +1709,20 @@ function parseFlags(args, defaults) {
   for (const a of args) {
     const m = a.match(/^--([\w-]+)(?:=(.*))?$/);
     if (m) out[m[1]] = m[2] ?? 'true';
+  }
+  return out;
+}
+
+function v3DateFilters(opts) {
+  const names = {
+    modifiedAfter: 'modifiedDateAfter',
+    modifiedBefore: 'modifiedDateBefore',
+    createdAfter: 'createDateAfter',
+    createdBefore: 'createDateBefore',
+  };
+  const out = {};
+  for (const [flag, param] of Object.entries(names)) {
+    if (opts[flag]) out[param] = String(opts[flag]).trim();
   }
   return out;
 }
