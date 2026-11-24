@@ -830,22 +830,44 @@ async function purposeItems({ reportId, policyId }) {
   return listItemsForField(field);
 }
 
-async function purposeFromV3Id(input) {
-  const since = new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10);
-  const body = await pageFetch(`${HOST_API}/api/v3.0/expense/reports${buildQS({ limit: 100, createDateAfter: since })}`, { soft: true });
-  const hit = (body?.Items || []).find((r) => r.Custom14?.ListItemID === input);
-  return hit ? hit.Custom14 : null;
+async function purposeFromV3Id(input, maxPages = 50) {
+  const seen = new Set();
+  let url = `${HOST_API}/api/v3.0/expense/reports${buildQS({ limit: 100 })}`;
+  let pages = 0;
+  while (url && !seen.has(url) && pages < maxPages) {
+    seen.add(url);
+    pages++;
+    const body = await pageFetch(url, { soft: true });
+    if (!body) return { item: null, pages, stopped: 'fetch' };
+    const hit = (body.Items || []).find((r) => r.Custom14?.ListItemID === input);
+    if (hit) return { item: hit.Custom14, pages, stopped: null };
+    url = typeof body.NextPage === 'string' && body.NextPage ? body.NextPage : null;
+  }
+  return { item: null, pages, stopped: url ? (seen.has(url) ? 'repeat' : 'cap') : null };
+}
+
+function v3PurposeNote(input, v3) {
+  const pages = `${v3.pages} page${v3.pages === 1 ? '' : 's'}`;
+  let why;
+  if (v3.item) why = `The v3 id "${input}" belongs to "${v3.item.Value}" (code ${v3.item.Code}), which this form does not offer.`;
+  else if (v3.stopped === 'fetch') why = `The v3 report list could not be read (page ${v3.pages}), so "${input}" could not be looked up.`;
+  else if (v3.stopped === 'cap') why = `"${input}" was not found in the first ${pages} of your v3 reports (100 per page); the lookup stops there.`;
+  else if (v3.stopped === 'repeat') why = `"${input}" was not found; Concur repeated a v3 NextPage link after ${pages}, so the lookup stopped.`;
+  else why = `"${input}" was not found as a Custom14.ListItemID on any of your v3 reports (${pages} searched).`;
+  return `${why} Pass the purpose label, code or GraphQL list-item id from \`concur purposes\` instead.`;
 }
 
 async function resolveBusinessPurpose(input, scope) {
   const items = await purposeItems(scope);
   let item = pickListItem(items, input);
+  let v3 = null;
   if (!item && /[$]|^[A-Za-z0-9_-]{30,}$/.test(String(input)) && !/^[0-9a-f]{32}$/i.test(String(input))) {
-    const v3 = await purposeFromV3Id(String(input));
-    if (v3) item = pickListItem(items, v3.Value) || pickListItem(items, v3.Code);
+    v3 = await purposeFromV3Id(String(input));
+    if (v3.item) item = pickListItem(items, v3.item.Value) || pickListItem(items, v3.item.Code);
   }
   if (!item) {
-    throw new Error(`No Business Purpose matches "${input}". Pass a list-item id, an exact label, a unique label prefix or a code. Options:\n${describeListItems(items)}`);
+    const note = v3 ? ` ${v3PurposeNote(input, v3)}` : '';
+    throw new Error(`No Business Purpose matches "${input}". Pass a list-item id, an exact label, a unique label prefix or a code.${note} Options:\n${describeListItems(items)}`);
   }
   return { id: normalizeListId(item.id), code: item.code, value: item.value };
 }
