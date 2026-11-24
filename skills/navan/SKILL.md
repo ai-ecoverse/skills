@@ -56,6 +56,17 @@ Add `--json` to any read command for machine-readable output.
 The `<bookingId>` used by `invoice` and `push-expense` is the **`bookingUuid`**
 shown by `navan trip <tripId>` (e.g. `6693f5ab-...`), not the airline PNR.
 
+## On a host: jsh over Chrome DevTools
+
+`navan` also runs on macOS or Linux under [jsh](https://github.com/ai-ecoverse/slicc-jsh). It drives a logged-in Navan tab in a Chrome that runs with a DevTools port. It finds Chrome itself (SLICC's Chrome, or `127.0.0.1:9222`), or takes `SLICC_CDP_URL`. `npm install -g ./skills/navan` puts it on PATH:
+
+```bash
+navan whoami
+navan trips --limit=5
+```
+
+Install and Chrome discovery: `references/jsh-host.md`.
+
 ## Authentication model (important)
 
 Navan's `/api/` endpoints are **not** plain cookie auth. Every request needs:

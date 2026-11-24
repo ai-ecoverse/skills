@@ -1,9 +1,9 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import test, { is, ok, throws } from 'tst';
 import { exitStub, load } from './extract.js';
+import { readScript } from './script.js';
 
-const SOURCE = fs.readFileSync(path.join(process.cwd(), 'scripts/navan.jsh'), 'utf8');
+const SOURCE = readScript(path.join(process.cwd(), 'scripts/navan.jsh'));
 const stub = exitStub();
 const { filterTrips, tripFilterOpts, expenseLines, invoiceNotes } = load(
   SOURCE,

@@ -1,3 +1,4 @@
+#!/usr/bin/env jsh
 // navan.jsh — Navan (formerly TripActions) corporate-travel API client
 // Generated via the secret-sauce skill from a recorded Berlin->Basel booking.
 //
