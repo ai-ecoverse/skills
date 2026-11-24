@@ -28,8 +28,10 @@ The script is `scripts/navan.jsh`; the shell command is `navan`.
 
 ```
 navan whoami                       Logged-in user (name, email, user id)
-navan trips [--json]               List trips (name, dates, item counts, tripId)
+navan trips [--since=YYYY-MM-DD] [--until=YYYY-MM-DD] [--upcoming|--past] [--limit=N] [--oldest-first] [--json]
+                                   List trips, newest first by start date (name, dates, item counts, tripId)
 navan trip <tripId> [--json]       Trip detail: flights + hotels with bookingId / confirmation
+navan expenses <tripId> [--json]    Per booking: expected Concur card charge (vendor, amount, ticketNumber, confirmation)
 navan airports <query> [--json]    Airport/city autocomplete (code, name)
 
 navan flights search --from=BER --to=BSL --depart=YYYY-MM-DD [--return=YYYY-MM-DD] [--pax=1] [--cabin=ECONOMY]
@@ -101,7 +103,8 @@ retry.
 ## End-to-end workflows
 
 ### View trips
-1. `navan trips` — find the trip and its `tripId`.
+1. `navan trips --limit=5` (or `--since=2026-01-01`, `--upcoming`, `--past`) — find the trip and its `tripId`.
+   Trips are sorted newest first by start date and `--limit=N` keeps the N most recent; `--since`/`--until` filter on the trip start date; `--upcoming` means the trip has not ended yet, `--past` that it has; `--oldest-first` restores chronological order.
 2. `navan trip <tripId>` — see flight route/times/airline + hotel name/dates and
    each booking's `bookingId` / `confirmationNumber`.
    - Checkpoint: confirmation numbers and a `[TICKETED]`/`[CONFIRMED]` status
@@ -146,12 +149,25 @@ retry.
      If everything shows `no`, the invoice has not synced yet — retry later.
 3. `navan invoice <bookingUuid> --download=<path>` — save the invoice PDF (the
    download endpoint returns a binary PDF).
+   - A **flight** PDF bundles both invoices: the airline (provider) invoice, then the Navan trip-fee invoice (2 pages).
+   - For a **hotel** the "provider invoice" is only an *Estimated Hotel Charges* summary (often in EUR), not the folio; the real folio arrives by email from the hotel.
 4. `navan push-expense <bookingUuid>` — review eligibility + what would be pushed
    (NOT pushed).
 5. After approval: `navan push-expense <bookingUuid> --confirm` — performs the
    `PUT .../expense` and reports the result.
    - Checkpoint: HTTP 200 = pushed. HTTP 400 `EmailAccessRequiredException` =
      grant Navan email access once in the UI, then retry.
+
+### Match a trip to its Concur card charges
+`navan expenses <tripId>` is read-only and prints, per booking, what the card charge will look like in Concur:
+
+| Charge | Concur vendor | Notes |
+|---|---|---|
+| Airfare | `NVN-AL-<bookingId>` | amount = booking total minus trip fee; `ticketNumber` is the e-ticket (same as the flight `confirmation`, e.g. `KDMDXPL`), which is what Concur's airfare `ticketNumber` field wants |
+| Trip fee | `NVN  TRP FEE <bookingId>` (two spaces) | stays expense type `01145` |
+| Hotel | the hotel | charged at the property; the booking total is only an estimate |
+
+Amounts come from the trip booking, not the invoice PDF, so verify them against the Concur available expense. Airfare card charges arrive in Concur typed `01145` and must be changed to `TOLLS`; see the `concur` skill.
 
 ## Notes
 

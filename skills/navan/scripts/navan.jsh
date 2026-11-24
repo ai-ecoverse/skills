@@ -214,16 +214,51 @@ async function cmdWhoami(args) {
 }
 
 // ----------------- commands: trips -----------------
+function todayIso() { return new Date().toISOString().slice(0, 10); }
+function isoDay(v, name) {
+  if (v == null) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v))) { console.error('--' + name + ' must be YYYY-MM-DD, got "' + v + '"'); process.exit(2); }
+  return String(v);
+}
+function filterTrips(trips, o) {
+  const today = o.today || todayIso();
+  let out = trips.filter(t => {
+    const start = t.start || '', end = t.end || t.start || '';
+    if (o.since && !(start >= o.since)) return false;
+    if (o.until && !(start && start <= o.until)) return false;
+    if (o.upcoming && !(end >= today)) return false;
+    if (o.past && !(end && end < today)) return false;
+    return true;
+  });
+  out = out.slice().sort((a, b) => {
+    const x = a.start || '', y = b.start || '';
+    if (x === y) return 0;
+    if (!x) return 1;
+    if (!y) return -1;
+    return o.oldestFirst ? (x < y ? -1 : 1) : (x < y ? 1 : -1);
+  });
+  if (o.limit != null) out = out.slice(0, o.limit);
+  return out;
+}
+function tripFilterOpts(args) {
+  const limitRaw = arg(args, 'limit');
+  const limit = limitRaw == null ? null : parseInt(limitRaw, 10);
+  if (limitRaw != null && !(limit > 0)) { console.error('--limit must be a positive number, got "' + limitRaw + '"'); process.exit(2); }
+  if (hasFlag(args, 'upcoming') && hasFlag(args, 'past')) { console.error('--upcoming and --past are mutually exclusive'); process.exit(2); }
+  return { since: isoDay(arg(args, 'since'), 'since'), until: isoDay(arg(args, 'until'), 'until'),
+    upcoming: hasFlag(args, 'upcoming'), past: hasFlag(args, 'past'), limit, oldestFirst: hasFlag(args, 'oldest-first') };
+}
 async function cmdTrips(args) {
   const json = hasFlag(args, 'json');
+  const opts = tripFilterOpts(args);
   const r = await api('GET', '/api/user/trips');
   if (r.status !== 200) fail(r, 'trips');
   const list = Array.isArray(r.json) ? r.json : (r.json && r.json.content) || [];
-  const trips = list.map(t => ({
+  const trips = filterTrips(list.map(t => ({
     tripId: t.uuid, name: t.name, start: t.startDate, end: t.endDate,
     flights: t.flightCount, hotels: t.hotelCount, cars: t.carCount, rail: t.railCount,
     personal: t.personal,
-  }));
+  })), opts);
   if (json) { console.log(JSON.stringify(trips, null, 2)); return; }
   if (!trips.length) { console.log('No trips found.'); return; }
   console.log(`Trips (${trips.length}):`);
@@ -235,13 +270,69 @@ async function cmdTrips(args) {
   }
 }
 
+function round2(n) { return Math.round(n * 100) / 100; }
+function numOrNull(n) { return typeof n === 'number' && isFinite(n) ? n : null; }
+function expenseLines(it) {
+  const isFlight = !!(it.departureFlight || it.returnFlight);
+  const bookingId = it.bookingId;
+  const cur = it.agencyCurrency || (it.chargedAmount && it.chargedAmount.currency) || 'EUR';
+  const charged = it.chargedAmount || null;
+  const tripFee = numOrNull(charged ? charged.tripFee : it.tripFee);
+  const total = numOrNull(charged ? charged.total : it.grandTotal);
+  const pd = it.passengerDatum || (it.bookingData && it.bookingData.passengerData && it.bookingData.passengerData[0]) || {};
+  const tickets = (pd.etickets && pd.etickets.length ? pd.etickets : (pd.eticket && pd.eticket !== 'Pending' ? [pd.eticket] : [])).filter(Boolean);
+  const out = [];
+  if (isFlight) {
+    out.push({ kind: 'air', vendor: 'NVN-AL-' + bookingId, currency: cur,
+      amount: total != null && tripFee != null ? round2(total - tripFee) : total,
+      concurType: 'TOLLS', ticketNumber: tickets[0] || null, ticketNumbers: tickets, confirmation: it.confirmationNumber || null });
+    if (tripFee) out.push({ kind: 'fee', vendor: 'NVN  TRP FEE ' + bookingId, currency: cur, amount: round2(tripFee),
+      concurType: '01145', ticketNumber: null, ticketNumbers: [], confirmation: null });
+  } else {
+    out.push({ kind: 'hotel', vendor: null, currency: cur, amount: numOrNull(it.grandTotal),
+      concurType: null, ticketNumber: null, ticketNumbers: [], confirmation: it.confirmationNumber || null,
+      note: it.hotelPaymentDescription && it.hotelPaymentDescription[0] || null });
+    if (numOrNull(it.tripFee) && it.tripFee > 0) out.push({ kind: 'fee', vendor: 'NVN  TRP FEE ' + bookingId, currency: cur, amount: round2(it.tripFee),
+      concurType: '01145', ticketNumber: null, ticketNumbers: [], confirmation: null });
+  }
+  return out.map(l => ({ bookingId, bookingUuid: it.bookingUuid, status: it.bookingStatus, ...l }));
+}
+function collectItems(t) {
+  const map = t.tripItemsMap || {};
+  return Object.keys(map).map(k => map[k]).filter(it => it.departureFlight || it.returnFlight || it.hotelRoom || it.hotel);
+}
+async function loadTrip(id) {
+  const r = await api('GET', `/api/user/trips/timeline?tripUuid=${encodeURIComponent(id)}&tripItemMapIncluded=true`);
+  if (r.status !== 200) fail(r, 'trip detail');
+  return Array.isArray(r.json) ? r.json[0] : r.json;
+}
+async function cmdExpenses(args) {
+  const json = hasFlag(args, 'json');
+  const id = args.find(a => a.indexOf('--') !== 0);
+  if (!id) { console.error('Usage: navan expenses <tripId> [--json]'); process.exit(2); }
+  const t = await loadTrip(id);
+  if (!t) { console.log('Trip not found.'); return; }
+  const lines = [].concat(...collectItems(t).map(expenseLines));
+  if (json) { console.log(JSON.stringify({ tripId: t.tripUuid, charges: lines }, null, 2)); return; }
+  console.log(`Expected Concur card charges for trip ${t.tripUuid} (read-only; amounts from the booking, not the invoice PDF):`);
+  if (!lines.length) { console.log('  (no flight/hotel items)'); return; }
+  for (const l of lines) {
+    const amt = l.amount != null ? l.amount.toFixed(2) + ' ' + l.currency : '— (' + l.currency + ', see invoice)';
+    console.log(`\n${l.kind.toUpperCase().padEnd(6)} booking ${l.bookingId || '—'}  [${l.status || '—'}]  ${amt}`);
+    console.log(`  card vendor:  ${l.vendor || '(hotel: charged at the property, vendor is the hotel)'}`);
+    if (l.concurType) console.log(`  concur type:  ${l.concurType}${l.kind === 'air' ? '  (arrives as 01145; change-type to TOLLS)' : ''}`);
+    if (l.kind === 'air') console.log(`  ticketNumber: ${l.ticketNumber || '— (not ticketed yet)'}  (use for: concur set-fields --ticket=)`);
+    if (l.confirmation && l.kind !== 'fee') console.log(`  confirmation: ${l.confirmation}`);
+    if (l.note) console.log(`  payment:      ${l.note}`);
+    if (l.bookingUuid) console.log(`  bookingUuid:  ${l.bookingUuid}  (navan invoice)`);
+  }
+}
+
 async function cmdTrip(args) {
   const json = hasFlag(args, 'json');
   const id = args.find(a => a.indexOf('--') !== 0);
   if (!id) { console.error('Usage: navan trip <tripId> [--json]'); process.exit(2); }
-  const r = await api('GET', `/api/user/trips/timeline?tripUuid=${encodeURIComponent(id)}&tripItemMapIncluded=true`);
-  if (r.status !== 200) fail(r, 'trip detail');
-  const t = Array.isArray(r.json) ? r.json[0] : r.json;
+  const t = await loadTrip(id);
   if (!t) { console.log('Trip not found.'); return; }
   const map = t.tripItemsMap || {};
   const flights = [], hotels = [];
@@ -653,6 +744,13 @@ function invoiceFlags(inv) {
   if (!inv) return [];
   return Object.keys(inv).filter(k => inv[k] === true);
 }
+function invoiceNotes(inv) {
+  const notes = [];
+  if (!inv) return notes;
+  if (inv.provider_invoices && inv.trip_fee_invoices) notes.push('One PDF holds both invoices: the provider (airline) invoice, then the Navan trip-fee invoice (a flight is 2 pages).');
+  if (inv.provider_invoices && !inv.trip_fee_invoices) notes.push('For hotels the provider invoice is only an "Estimated Hotel Charges" summary (often in EUR), not the hotel folio. The real folio comes by email from the hotel.');
+  return notes;
+}
 async function cmdInvoice(args) {
   const json = hasFlag(args, 'json');
   const bookingId = args.find(a => a.indexOf('--') !== 0);
@@ -682,8 +780,10 @@ async function cmdInvoice(args) {
   } else {
     console.log('  Invoice availability: unavailable (sync_status HTTP ' + st.invoicesStatus + ')');
   }
-  if (saved) console.log(`  Invoice saved to: ${saved}`);
-  else if (available.length) console.log('  To save the invoice PDF: navan invoice ' + bookingId + ' --download=<path>');
+  if (saved) {
+    console.log(`  Invoice saved to: ${saved}`);
+    for (const n of invoiceNotes(st.invoices)) console.log('  NOTE: ' + n);
+  } else if (available.length) console.log('  To save the invoice PDF: navan invoice ' + bookingId + ' --download=<path>');
 }
 
 async function cmdPushExpense(args) {
@@ -731,8 +831,12 @@ function cmdHelp() {
 
 Usage:
   navan whoami                              Show the logged-in user
-  navan trips [--json]                      List trips (name, dates, item counts, tripId)
+  navan trips [--since=YYYY-MM-DD] [--until=YYYY-MM-DD] [--upcoming|--past] [--limit=N] [--oldest-first] [--json]
+                                            List trips newest-first by start date (name, dates, item counts, tripId).
+                                            --since/--until filter on start date; --limit keeps the N most recent.
   navan trip <tripId> [--json]              Trip detail: flights + hotels with bookingId/confirmation
+  navan expenses <tripId> [--json]         Per booking: what the Concur card charge will look like (vendor,
+                                            amount, ticketNumber, confirmation). Read-only.
   navan airports <query> [--json]           Airport/city autocomplete (code, name)
 
   navan flights search --from=BER --to=BSL --depart=YYYY-MM-DD [--return=YYYY-MM-DD] [--pax=1] [--cabin=ECONOMY]
@@ -753,7 +857,9 @@ Usage:
 
   navan invoice <bookingId> [--download=<path>] [--json]
                                             Report invoice sync_status + expense eligibility for a booking.
-                                            With --download, save the invoice PDF to <path>.
+                                            With --download, save the invoice PDF to <path>. Flights: one PDF with
+                                            the provider invoice then the Navan fee invoice. Hotels: only an
+                                            "Estimated Hotel Charges" summary, not the folio (that comes by email).
   navan push-expense <bookingId> [--confirm]
                                             Push the booking + invoice to the expense system (Concur).
                                             WITHOUT --confirm: print eligibility + what would be pushed and STOP.
@@ -781,6 +887,7 @@ try {
   else if (cmd === 'whoami') await cmdWhoami(rest);
   else if (cmd === 'trips') await cmdTrips(rest);
   else if (cmd === 'trip') await cmdTrip(rest);
+  else if (cmd === 'expenses') await cmdExpenses(rest);
   else if (cmd === 'airports') await cmdAirports(rest);
   else if (cmd === 'flights') await cmdFlights(rest);
   else if (cmd === 'hotels') await cmdHotels(rest);
