@@ -1,18 +1,16 @@
+#!/usr/bin/env jsh
 // gmail.jsh — Gmail CLI for SLICC agents
-// Obtains access tokens via the Google OAuth2 token endpoint (refresh_token
-// grant). No browser needed for day-to-day use.
-//
-// Credential precedence:
+// Token precedence:
 //   1. GWS_CLIENT_ID / GWS_CLIENT_SECRET / GWS_REFRESH_TOKEN env vars
-//      (unchanged legacy behaviour — always wins when all three are present)
-//   2. Persisted skill config (`skill.config()`), provisioned by `gmail login`
-//      — the same mechanism the sibling gcloud skill uses. Works in runtimes
-//      that cannot inject env vars into a .jsh child process.
+//      (refresh_token grant; wins when all three are present)
+//   2. `jerk gmail get --reveal` (sign in once with `gmail login`, which runs
+//      `jerk gmail create`)
+//   3. Legacy persisted skill config (`skill.config()`), still read
 //
 // Usage: gmail <command> [args] [--flags]
 //
 // Commands:
-//   login     Authenticate with Google and persist a refresh token
+//   login     Sign in to Google through jerk
 //   auth      Show which credential source is active
 //   logout    Clear persisted credentials
 //   mail      List inbox messages
@@ -53,13 +51,8 @@ const GMAIL_WEB = 'https://mail.google.com/mail/u/0/#inbox';
 // gcloud skill's client is deliberately not reused here.
 const OAUTH_CLIENT_ID = '406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com';
 const OAUTH_CLIENT_SECRET = 'kSmqreRr0qwBWJgbf5Y-PjSU';
-const AUTH_URL = 'https://accounts.google.com/o/oauth2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
-// Loopback redirect; desktop clients accept 127.0.0.1 on any port. A fixed port
-// keeps the oauth-token --redirect-pattern match deterministic.
-const REDIRECT_PORT = 8085;
-const REDIRECT_URI = `http://127.0.0.1:${REDIRECT_PORT}/`;
 const OAUTH_SCOPE = 'https://mail.google.com/';
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
@@ -138,42 +131,61 @@ async function saveConfig(updates) {
   await skill.config({ ...cur, ...updates });
 }
 
-/**
- * Resolve OAuth credentials.
- *
- * Precedence:
- *   1. env vars (GWS_CLIENT_ID + GWS_CLIENT_SECRET + GWS_REFRESH_TOKEN) — all
- *      three required, exactly as before, so nothing regresses for callers who
- *      do have a working env-var setup.
- *   2. persisted skill config (written by `gmail login`).
- *
- * Returns { clientId, clientSecret, refreshToken, source } or null.
- */
-async function resolveCredentials() {
-  const envId = process.env.GWS_CLIENT_ID;
-  const envSecret = process.env.GWS_CLIENT_SECRET;
-  const envRefresh = process.env.GWS_REFRESH_TOKEN;
-  if (envId && envSecret && envRefresh) {
-    return {
-      clientId: envId,
-      clientSecret: envSecret,
-      refreshToken: envRefresh,
-      source: 'env',
-    };
-  }
+function envCredentials() {
+  const clientId = process.env.GWS_CLIENT_ID;
+  const clientSecret = process.env.GWS_CLIENT_SECRET;
+  const refreshToken = process.env.GWS_REFRESH_TOKEN;
+  if (!(clientId && clientSecret && refreshToken)) return null;
+  return { clientId, clientSecret, refreshToken, source: 'env' };
+}
 
+async function configCredentials() {
   const cfg = await loadConfig();
-  if (cfg.refresh_token) {
-    return {
-      clientId: cfg.client_id || OAUTH_CLIENT_ID,
-      clientSecret: cfg.client_secret || OAUTH_CLIENT_SECRET,
-      refreshToken: cfg.refresh_token,
-      source: 'config',
-      account: cfg.account || '',
-    };
-  }
+  if (!cfg.refresh_token) return null;
+  return {
+    clientId: cfg.client_id || OAUTH_CLIENT_ID,
+    clientSecret: cfg.client_secret || OAUTH_CLIENT_SECRET,
+    refreshToken: cfg.refresh_token,
+    source: 'config',
+    account: cfg.account || '',
+  };
+}
 
-  return null;
+function firstLine(text) {
+  return String(text || '').trim().split('\n')[0].slice(0, 200);
+}
+
+async function jerkToken() {
+  let r;
+  try {
+    r = await exec.spawn(['jerk', 'gmail', 'get', '--reveal']);
+  } catch (e) {
+    return { status: 'missing', detail: firstLine(e && e.message) };
+  }
+  const token = String(r.stdout || '').trim();
+  if (r.exitCode === 0 && token && !/[\s…]/.test(token)) return { token };
+  if (r.exitCode === 127) return { status: 'missing', detail: 'jerk is not installed' };
+  const status = r.exitCode === 3 ? 'signin' : r.exitCode === 4 ? 'unavailable' : 'error';
+  return { status, detail: firstLine(r.stderr) };
+}
+
+async function resolveSource() {
+  const env = envCredentials();
+  if (env) return { source: 'env', creds: env };
+  const jerk = await jerkToken();
+  if (jerk.token) return { source: 'jerk', token: jerk.token };
+  const config = await configCredentials();
+  if (config) return { source: 'config', creds: config };
+  return { source: null, jerk };
+}
+
+function noCredentialsMessage(jerk) {
+  const why = jerk && jerk.status === 'missing'
+    ? 'jerk is not installed (npm i -g @ai-ecoverse/slicc-jerk)'
+    : jerk && jerk.status === 'unavailable'
+      ? `jerk cannot sign in here${jerk.detail ? `: ${jerk.detail}` : ''}`
+      : 'no Gmail sign-in found';
+  return `gmail: ${why}. Run \`gmail login\` (it runs \`jerk gmail create\`), or set GWS_CLIENT_ID, GWS_CLIENT_SECRET and GWS_REFRESH_TOKEN.`;
 }
 
 async function refreshAccessToken(creds) {
@@ -193,17 +205,14 @@ async function refreshAccessToken(creds) {
 async function getAccessToken() {
   if (_accessToken) return _accessToken;
 
-  const creds = await resolveCredentials();
-  if (!creds) {
-    die(
-      'gmail: no credentials. Run `gmail login` (browser consent), or ' +
-      '`gmail login --from-file <creds.json>`, or set GWS_CLIENT_ID, ' +
-      'GWS_CLIENT_SECRET and GWS_REFRESH_TOKEN.'
-    );
+  const resolved = await resolveSource();
+  if (!resolved.source) die(noCredentialsMessage(resolved.jerk));
+  if (resolved.source === 'jerk') {
+    _accessToken = resolved.token;
+    return _accessToken;
   }
+  const creds = resolved.creds;
 
-  // Reuse a still-valid cached access token from config (config source only —
-  // env-var credentials are treated as stateless, as before).
   if (creds.source === 'config') {
     const cfg = await loadConfig();
     if (cfg.access_token && cfg.expires_at && Date.now() < cfg.expires_at - 60_000) {
@@ -228,25 +237,6 @@ async function getAccessToken() {
 
   _accessToken = data.access_token;
   return _accessToken;
-}
-
-async function exchangeCode(code) {
-  const res = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code: code,
-      client_id: OAUTH_CLIENT_ID,
-      client_secret: OAUTH_CLIENT_SECRET,
-      redirect_uri: REDIRECT_URI,
-    }).toString(),
-  });
-  const data = await res.json();
-  if (!res.ok || !data.refresh_token) {
-    die(`gmail login: code exchange failed (${res.status}): ${JSON.stringify(data)}`);
-  }
-  return data;
 }
 
 // ─── API Client ──────────────────────────────────────────────────────────────
@@ -436,179 +426,145 @@ function parseDisplayName(str) {
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
-/**
- * `gmail login` — browser consent flow via `oauth-token --intercept`, persisting
- * the resulting refresh token to skill config (mirrors `gcloud login`).
- *
- * `gmail login --from-file <path>` — one-time import of credentials captured
- * elsewhere. Accepts the conventional Google client-secrets field names:
- * client_id, client_secret, refresh_token, plus optional token_uri, scope,
- * account.
- */
+async function importCredentialsFile(fromFile) {
+  const fs = require('node:fs');
+  let raw;
+  try {
+    raw = fs.readFileSync(fromFile, 'utf8');
+  } catch (e) {
+    die(`gmail login: cannot read ${fromFile}: ${e.message}`);
+  }
+  let creds;
+  try {
+    creds = JSON.parse(raw);
+  } catch (e) {
+    die(`gmail login: ${fromFile} is not valid JSON: ${e.message}`);
+  }
+  // Tolerate the "installed"/"web" wrapper Google's console downloads use.
+  if (creds.installed || creds.web) creds = { ...(creds.installed || creds.web), ...creds };
+  const refreshToken = creds.refresh_token || creds.refreshToken;
+  const clientId = creds.client_id || creds.clientId;
+  const clientSecret = creds.client_secret || creds.clientSecret;
+  // A refresh token is bound to the OAuth client that issued it, so we must not
+  // substitute this skill's built-in client for a missing one — the result would
+  // be unusable AND would have overwritten a working stored config.
+  const missing = [
+    !refreshToken && 'refresh_token',
+    !clientId && 'client_id',
+    !clientSecret && 'client_secret',
+  ].filter(Boolean);
+  if (missing.length) {
+    die(
+      `gmail login: ${fromFile} is missing required field(s): ${missing.join(', ')}\n` +
+      '  A refresh token only works with the client_id/client_secret that issued it.\n' +
+      '  Existing stored credentials were left untouched.'
+    );
+  }
+  // Validate the imported credentials BEFORE persisting anything, and validate
+  // them *directly* — going through gmailGet()/getAccessToken() would resolve
+  // credentials env-first, so with GWS_* set we would "verify" a different
+  // identity and store an unusable token while reporting success.
+  const imported = { clientId, clientSecret, refreshToken };
+  let tokenData;
+  try {
+    tokenData = await refreshAccessToken(imported);
+  } catch (e) {
+    die(`gmail login: could not reach Google to validate credentials: ${e.message}`);
+  }
+  if (!tokenData?.access_token) {
+    die(
+      `gmail login: the credentials in ${fromFile} were rejected by Google: ` +
+      `${JSON.stringify(tokenData)}\n  Existing stored credentials were left untouched.`
+    );
+  }
+
+  // Only now that the refresh token demonstrably works do we overwrite config.
+  let email = creds.account || '';
+  try {
+    const res = await fetch(`${GMAIL_BASE}/profile`, {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    if (res.ok) {
+      const profile = await res.json();
+      email = profile.emailAddress || email;
+    }
+  } catch { /* identity is cosmetic here; the token itself already validated */ }
+
+  await saveConfig({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    scope: creds.scope || OAUTH_SCOPE,
+    account: email,
+    access_token: tokenData.access_token,
+    expires_at: Date.now() + (tokenData.expires_in || 3600) * 1000,
+  });
+  process.stdout.write(`${C.green('✓')} Credentials imported from ${fromFile}${email ? ` (${email})` : ''}\n`);
+  process.stdout.write(`  ${C.gray('Stored in skill config; access tokens auto-refresh.')}\n`);
+}
+
 async function cmdLogin() {
   const fromFile = typeof flags['from-file'] === 'string'
     ? flags['from-file']
     : (typeof flags.from === 'string' ? flags.from : null);
-
   if (fromFile) {
-    const fs = require('node:fs');
-    let raw;
-    try {
-      raw = fs.readFileSync(fromFile, 'utf8');
-    } catch (e) {
-      die(`gmail login: cannot read ${fromFile}: ${e.message}`);
-    }
-    let creds;
-    try {
-      creds = JSON.parse(raw);
-    } catch (e) {
-      die(`gmail login: ${fromFile} is not valid JSON: ${e.message}`);
-    }
-    // Tolerate the "installed"/"web" wrapper Google's console downloads use.
-    if (creds.installed || creds.web) creds = { ...(creds.installed || creds.web), ...creds };
-    const refreshToken = creds.refresh_token || creds.refreshToken;
-    const clientId = creds.client_id || creds.clientId;
-    const clientSecret = creds.client_secret || creds.clientSecret;
-    // A refresh token is bound to the OAuth client that issued it, so we must not
-    // substitute this skill's built-in client for a missing one — the result would
-    // be unusable AND would have overwritten a working stored config.
-    const missing = [
-      !refreshToken && 'refresh_token',
-      !clientId && 'client_id',
-      !clientSecret && 'client_secret',
-    ].filter(Boolean);
-    if (missing.length) {
-      die(
-        `gmail login: ${fromFile} is missing required field(s): ${missing.join(', ')}\n` +
-        '  A refresh token only works with the client_id/client_secret that issued it.\n' +
-        '  Existing stored credentials were left untouched.'
-      );
-    }
-    // Validate the imported credentials BEFORE persisting anything, and validate
-    // them *directly* — going through gmailGet()/getAccessToken() would resolve
-    // credentials env-first, so with GWS_* set we would "verify" a different
-    // identity and store an unusable token while reporting success.
-    const imported = { clientId, clientSecret, refreshToken };
-    let tokenData;
-    try {
-      tokenData = await refreshAccessToken(imported);
-    } catch (e) {
-      die(`gmail login: could not reach Google to validate credentials: ${e.message}`);
-    }
-    if (!tokenData?.access_token) {
-      die(
-        `gmail login: the credentials in ${fromFile} were rejected by Google: ` +
-        `${JSON.stringify(tokenData)}\n  Existing stored credentials were left untouched.`
-      );
-    }
-
-    // Only now that the refresh token demonstrably works do we overwrite config.
-    let email = creds.account || '';
-    try {
-      const res = await fetch(`${GMAIL_BASE}/profile`, {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` },
-      });
-      if (res.ok) {
-        const profile = await res.json();
-        email = profile.emailAddress || email;
-      }
-    } catch { /* identity is cosmetic here; the token itself already validated */ }
-
-    await saveConfig({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      scope: creds.scope || OAUTH_SCOPE,
-      account: email,
-      access_token: tokenData.access_token,
-      expires_at: Date.now() + (tokenData.expires_in || 3600) * 1000,
-    });
-    process.stdout.write(`${C.green('✓')} Credentials imported from ${fromFile}${email ? ` (${email})` : ''}\n`);
-    process.stdout.write(`  ${C.gray('Stored in skill config; access tokens auto-refresh.')}\n`);
+    await importCredentialsFile(fromFile);
     return;
   }
 
-  process.stdout.write(`${C.cyan('Opening Google sign-in…')}\n`);
-  process.stdout.write(`${C.gray('A browser tab will open. Complete the Google consent screen, then return here.')}\n`);
-
-  const authorizeUrl =
-    `${AUTH_URL}?client_id=${encodeURIComponent(OAUTH_CLIENT_ID)}` +
-    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
-    `&response_type=code&access_type=offline&prompt=consent` +
-    `&scope=${encodeURIComponent(OAUTH_SCOPE)}`;
-
-  const { stdout, stderr, exitCode } = await exec.spawn([
-    'oauth-token', '--intercept',
-    '--authorize-url', authorizeUrl,
-    '--redirect-pattern', `http://127.0.0.1:${REDIRECT_PORT}/*`,
-  ]);
-
-  if (exitCode !== 0) {
-    die(`gmail login: oauth-token intercept failed:\n${stderr}`);
-  }
-
-  const redirectUrl = (stdout || '').trim();
-  const m = redirectUrl.match(/[?&]code=([^&\s]+)/);
-  if (!m) {
-    die(`gmail login: no authorization code in redirect URL.\nGot: ${redirectUrl}`);
-  }
-  // Authorization codes are single-use: they burn on the first request that
-  // reaches Google. Never retry an exchange with the same code — re-run login.
-  const tok = await exchangeCode(decodeURIComponent(m[1]));
-
-  await saveConfig({
-    client_id: OAUTH_CLIENT_ID,
-    client_secret: OAUTH_CLIENT_SECRET,
-    refresh_token: tok.refresh_token,
-    access_token: tok.access_token || '',
-    expires_at: Date.now() + (tok.expires_in || 3600) * 1000,
-    scope: OAUTH_SCOPE,
-  });
-
-  let email = '';
+  const argv = ['jerk', 'gmail', 'create'];
+  if (flags.force === true) argv.push('--force');
+  let r;
   try {
-    const profile = await gmailGet('/profile');
-    email = profile.emailAddress || '';
-    await saveConfig({ account: email });
-  } catch { /* non-fatal */ }
-
-  process.stdout.write(`${C.green('✓')} Logged in to Gmail${email ? ` (${email})` : ''}\n`);
-  process.stdout.write(`  ${C.gray('Refresh token stored in skill config. Access tokens auto-refresh.')}\n`);
+    r = await exec.spawn(argv);
+  } catch (e) {
+    r = { exitCode: 127, stdout: '', stderr: '' };
+  }
+  if (r.exitCode === 127) {
+    process.stderr.write('gmail login: jerk is not installed. Install it with: npm i -g @ai-ecoverse/slicc-jerk\n');
+    process.exit(4);
+  }
+  if (r.stdout) process.stdout.write(r.stdout);
+  if (r.stderr) process.stderr.write(r.stderr);
+  if (r.exitCode !== 0) process.exit(r.exitCode);
+  process.stdout.write(`${C.green('✓')} Signed in to Gmail through jerk\n`);
+  process.stdout.write(`  ${C.gray('jerk keeps the grant and refreshes it; check it with: gmail auth')}\n`);
 }
 
 /** `gmail auth` — show which credential source is active (never prints secrets). */
 async function cmdAuth() {
-  const creds = await resolveCredentials();
+  const resolved = await resolveSource();
+  const creds = resolved.creds || null;
   const cfg = await loadConfig();
-  // Only surface persisted-config metadata when the config is the ACTIVE source.
-  // With GWS_* env vars set, the stored config is inactive and may describe an
-  // entirely different mailbox — reporting its account/scope would be misleading.
-  const configActive = creds?.source === 'config';
+  const configActive = resolved.source === 'config';
   let account = creds?.account || (configActive ? cfg.account : '') || null;
   let scope = configActive ? cfg.scope || OAUTH_SCOPE : null;
-  if (creds?.source === 'env') {
-    // Resolve identity from the token actually in use, not from stored config.
+  if (resolved.source === 'env' || resolved.source === 'jerk') {
     try {
       const profile = await gmailGet('/profile');
       account = profile.emailAddress || null;
     } catch { /* leave unknown rather than borrow the inactive config's identity */ }
-    scope = process.env.GWS_SCOPE || null;
+    scope = resolved.source === 'jerk' ? OAUTH_SCOPE : process.env.GWS_SCOPE || null;
   }
   const info = {
-    authenticated: !!creds,
-    source: creds ? creds.source : null,
+    authenticated: !!resolved.source,
+    source: resolved.source,
     account,
     client_id: creds ? creds.clientId : null,
     refresh_token_length: creds ? creds.refreshToken.length : 0,
     scope,
   };
+  if (!resolved.source && resolved.jerk && resolved.jerk.status) info.jerk = resolved.jerk.status;
   if (flags.json === true || flags.json === 'true') { out(info); return; }
+  const tokenLine = resolved.source === 'jerk'
+    ? 'held by jerk'
+    : info.refresh_token_length ? `present (${info.refresh_token_length} chars)` : C.red('absent');
   process.stdout.write('\n');
   process.stdout.write(`  ${C.gray('authenticated')}  ${info.authenticated ? C.green('yes') : C.red('no')}\n`);
   process.stdout.write(`  ${C.gray('source')}         ${info.source || C.gray('(none — run: gmail login)')}\n`);
   process.stdout.write(`  ${C.gray('account')}        ${info.account || C.gray('(unknown)')}\n`);
   process.stdout.write(`  ${C.gray('scope')}          ${info.scope || C.gray('(unknown — set by the env credentials)')}\n`);
-  process.stdout.write(`  ${C.gray('refresh token')}  ${info.refresh_token_length ? `present (${info.refresh_token_length} chars)` : C.red('absent')}\n`);
+  process.stdout.write(`  ${C.gray('refresh token')}  ${tokenLine}\n`);
 }
 
 /** `gmail logout` — revoke (best effort) and clear persisted credentials. */
@@ -1033,9 +989,9 @@ function showHelp() {
 Usage: gmail <command> [options]
 
 Commands:
-  login      Authenticate with Google (browser consent) and persist credentials
+  login      Sign in to Google through jerk (jerk gmail create)
   auth       Show which credential source is active (no secrets printed)
-  logout     Revoke and clear persisted credentials
+  logout     Revoke and clear legacy persisted credentials (jerk: jerk gmail drop)
   mail       List inbox messages
   view       View a single message (full body)
   attachments List a message's attachments (name, type, size, attachmentId)
@@ -1045,8 +1001,9 @@ Commands:
   monday     Aggregated inbox items for monday dispatcher
 
 Login options:
-  --from-file PATH   Import credentials from a JSON file instead of running the
-                     consent flow. Fields: client_id, client_secret,
+  --force            Sign in again even when jerk already holds a grant
+  --from-file PATH   Legacy: import credentials from a JSON file into the skill
+                     config instead of signing in through jerk. Fields: client_id, client_secret,
                      refresh_token (required), token_uri, scope, account.
 
 Mail options:
@@ -1089,10 +1046,11 @@ Monday options:
 Authentication (precedence):
   1. GWS_CLIENT_ID + GWS_CLIENT_SECRET + GWS_REFRESH_TOKEN env vars
      (all three must be set; takes precedence when present)
-  2. Persisted skill config — provisioned by \`gmail login\`
-     (or \`gmail login --from-file creds.json\`)
-  Either way, a fresh access token is minted via the OAuth2 refresh_token
-  grant on demand; config-sourced tokens are cached until expiry.
+  2. jerk — \`jerk gmail get --reveal\`, signed in with \`gmail login\`; jerk
+     refreshes the token (in SLICC 7 it is a placeholder the vault fills in)
+  3. Legacy persisted skill config (\`gmail login --from-file creds.json\`)
+  Env and config credentials mint an access token with the OAuth2
+  refresh_token grant on demand; config-sourced tokens are cached until expiry.
 
 Gmail API:
   Base URL: https://gmail.googleapis.com/gmail/v1/users/me

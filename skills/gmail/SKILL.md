@@ -3,18 +3,19 @@ name: gmail
 description: >-
   Interact with Gmail — read inbox, search messages, view full message bodies,
   send email, reply to threads, and produce aggregated inbox items for the monday
-  dispatcher. Authenticates via OAuth2 refresh token — either GWS_* env vars or
-  credentials persisted by `gmail login`. Triggers on requests involving Gmail,
-  Google email, inbox, sending mail, checking unread messages, signing in to
-  Gmail, or monday inbox aggregation that includes Gmail data.
+  dispatcher. Signs in through jerk (`gmail login` runs `jerk gmail create`) or
+  uses GWS_* env vars. Triggers on requests involving Gmail, Google email,
+  inbox, sending mail, checking unread messages, signing in to Gmail, or monday
+  inbox aggregation that includes Gmail data.
 allowed-tools: bash
 ---
 
 # Gmail
 
-Direct API access to Gmail via OAuth2 refresh token flow. Credentials come from
-either the `GWS_*` environment variables or from credentials persisted by
-`gmail login`; see [Authentication](#authentication) for the precedence rules.
+Direct API access to Gmail. Sign in once with `gmail login`, which hands the
+OAuth flow to [jerk](https://github.com/ai-ecoverse/slicc-jerk); the `GWS_*`
+environment variables and credentials persisted by an older `gmail login` still
+work. See [Authentication](#authentication) for the precedence rules.
 
 ## Quick start
 
@@ -49,86 +50,74 @@ gmail monday --limit 20 --date 1d
 
 ## Authentication
 
-Credentials are resolved in a fixed order, first match wins:
+A token is resolved in a fixed order, first match wins:
 
 1. **Environment variables** — used only if `GWS_CLIENT_ID`, `GWS_CLIENT_SECRET`
-   and `GWS_REFRESH_TOKEN` are *all* set. Takes precedence over stored config.
-2. **Persisted skill config** — written by `gmail login`. Survives across
-   sessions, so you authenticate once.
+   and `GWS_REFRESH_TOKEN` are *all* set. An access token is minted from the
+   refresh token on demand.
+2. **jerk** — `jerk gmail get --reveal`, from the grant that `gmail login` made.
+   jerk refreshes it. In SLICC 7 jerk keeps the grant in the vault and prints a
+   placeholder that the vault fills in when the request goes to Google; natively
+   it uses the OS keyring.
+3. **Legacy persisted skill config** — credentials stored by an earlier
+   `gmail login` (or `gmail login --from-file`). Still read, never written by
+   the jerk flow.
 
-If neither is present, every command fails with a message naming both options.
-An access token is minted on demand from the refresh token and cached until it
-expires, so tokens are never stored long-term by the caller.
+With none of them, every command exits 1 with a message that names
+`gmail login` and, when jerk isn't on `PATH`, `npm i -g @ai-ecoverse/slicc-jerk`.
+`gmail auth` shows which source is active, never a secret.
 
 | Variable | Description |
 |----------|-------------|
 | `GWS_CLIENT_ID` | OAuth2 client ID |
 | `GWS_CLIENT_SECRET` | OAuth2 client secret |
 | `GWS_REFRESH_TOKEN` | Long-lived refresh token |
-| `GWS_TYPE` | Literal `authorized_user` (not used by the script) |
 
-If your organization already has a Google Cloud OAuth client and has provisioned
-these three as real secrets, set them and skip the rest of this section.
+> **Scope warning:** the scope is `https://mail.google.com/` — full read, send
+> *and delete* access to the mailbox. Treat the grant accordingly, and prefer a
+> dedicated account over a personal mailbox where that distinction matters.
 
-Run `gmail auth` at any time to see which source is active. It prints the
-account, scope and credential source, and never prints secret values.
+jerk's `gmail` provider uses Mozilla Thunderbird's public Google client with
+loopback PKCE. See [`references/oauth-bootstrap.md`](references/oauth-bootstrap.md)
+for the sign-in, the exit codes and the legacy paths.
 
-> **Scope warning:** the tested scope is `https://mail.google.com/` — full
-> read, send *and delete* access to the mailbox. Treat stored credentials
-> accordingly, and prefer a dedicated account over a personal mailbox where
-> that distinction matters.
+## On a host
 
-### Obtaining credentials inside SLICC
-
-If you don't already have `GWS_*` values provisioned, you can bootstrap them
-yourself from inside a SLICC session using `oauth-token`'s intercept mode
-(either the `--from-file <path>` form or the equivalent `--intercept
---authorize-url ... --redirect-pattern ...` flag form — both build the same
-underlying `InterceptOAuthConfig` and run the identical mechanism, see
-`oauth-token --help`) together with a well-known, publicly-documented OAuth
-client (no new Google Cloud project or app-review needed). See
-[`references/oauth-bootstrap.md`](references/oauth-bootstrap.md) for the
-full, tested walkthrough — including the exact intercept config, the
-token-exchange command, a curl gotcha you'll likely hit if you improvise it
-yourself, and a security note on the risk of the authorization code being
-exposed before exchange.
+`gmail` also runs on macOS and Linux under
+[slicc-jsh](https://github.com/ai-ecoverse/slicc-jsh). It makes no browser
+connection of its own, so there is no `SLICC_CDP_URL` to set for it; only
+`jerk gmail create` needs a browser. See
+[`references/jsh-host.md`](references/jsh-host.md).
 
 ## Commands
 
-### gmail login [--from-file PATH]
+### gmail login [--force] [--from-file PATH]
 
-Authenticate and persist credentials so later runs need no env vars.
+Sign in. With no file it runs `jerk gmail create` and passes jerk's exit code
+through: **3** means a sign-in is needed that can't happen here, **4** means
+jerk isn't available (not installed, no browser, no linked slicc CLI). A human
+completes Google's consent screen; this step is inherently interactive.
+`--force` asks jerk to sign in again.
 
-With no arguments, runs the interactive browser consent flow and stores the
-resulting refresh token in the skill config. A human must complete the Google
-consent screen — this step is inherently interactive.
-
-With `--from-file PATH`, imports credentials from a JSON file instead of running
-consent. Required fields: `client_id`, `client_secret`, `refresh_token` — all
-three, because a refresh token only works with the client that issued it.
-Optional: `token_uri`, `scope`, `account`.
-
-The imported credentials are validated against Google *before* anything is
-persisted, so a rejected or incomplete import fails with a non-zero exit and
-leaves existing stored credentials untouched.
+`--from-file PATH` is the legacy import: it validates `client_id`,
+`client_secret` and `refresh_token` (all three, since a refresh token only
+works with the client that issued it) against Google, then stores them in the
+skill config. A rejected or incomplete import exits non-zero and leaves stored
+credentials untouched.
 
 ```bash
-gmail login                              # browser consent
-gmail login --from-file ./creds.json     # import existing credentials
+gmail login                              # jerk gmail create
+gmail login --from-file ./creds.json     # legacy: import existing credentials
 ```
-
-The consent flow captures the redirect with a bounded timeout. If it expires
-before you finish, the authorization code is lost and you must re-run `login` —
-re-arm it *first*, then complete the consent screen.
 
 ### gmail auth
 
-Show which credential source is active (`env` or `config`), the account, and the
+Show which credential source is active (`env`, `jerk` or `config`), the account, and the
 scope. Prints no secret values. `gmail whoami` is an alias.
 
 ### gmail logout [--no-revoke]
 
-Clear the persisted credentials. By default it also attempts to revoke the
+Clear the legacy persisted credentials. A jerk grant is separate: remove it with `jerk gmail drop`. By default it also attempts to revoke the
 refresh token with Google first; that revocation is best-effort, so the local
 credentials are cleared even if the network call fails.
 
@@ -251,6 +240,6 @@ gmail send --to sender@example.com --subject "Re: Topic" --body "Following up on
 
 ## Error handling
 
-If `GWS_CLIENT_ID`, `GWS_CLIENT_SECRET`, or `GWS_REFRESH_TOKEN` are missing, the
-script prints a diagnostic message and exits with code 1. API errors include the
-HTTP status and error message from Google.
+With no credential source the script prints a diagnostic that names `gmail login`
+and exits with code 1. API errors include the HTTP status and error message from
+Google.
