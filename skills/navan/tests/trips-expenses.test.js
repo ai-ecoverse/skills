@@ -59,18 +59,24 @@ const flight = {
   agencyCurrency: 'EUR',
   grandTotal: 446.9,
   chargedAmount: { currency: 'EUR', total: 401.23, tripFee: 16.14 },
+  priceBreakdown: { priceQuotes: [{ providerPrice: { total: { amount: 468.1, currency: 'EUR' } } }] },
   passengerDatum: { etickets: ['KDMDXPL'], eticket: 'KDMDXPL' },
 };
 
 test('flight yields an air charge and a trip-fee charge with vendor patterns', () => {
   const [air, fee] = expenseLines(flight);
   is(air.vendor, 'NVN-AL-A29I1Z71I');
-  is(air.amount, 385.09);
+  is(air.amount, 468.1);
   is(air.ticketNumber, 'KDMDXPL');
   is(air.concurType, 'TOLLS');
   is(fee.vendor, 'NVN  TRP FEE A29I1Z71I');
   is(fee.amount, 16.14);
   is(fee.concurType, '01145');
+});
+
+test('without provider price the air amount falls back to total minus fee', () => {
+  const { priceBreakdown, ...bare } = flight;
+  is(expenseLines(bare)[0].amount, 385.09);
 });
 
 test('a pending ticket yields no ticketNumber', () => {
@@ -79,10 +85,12 @@ test('a pending ticket yields no ticketNumber', () => {
 });
 
 test('hotel yields a charge without a Navan vendor', () => {
-  const lines = expenseLines({ hotel: {}, bookingId: 'HDR', confirmationNumber: 'SAB1', agencyCurrency: 'EUR', grandTotal: 269.2, tripFee: 0 });
+  const lines = expenseLines({ hotel: {}, bookingId: 'HDR', confirmationNumber: 'SAB1', agencyCurrency: 'EUR', grandTotal: 269.2, tripFee: 0, hotelPaymentDescription: ['A credit card was needed at check-in to pay the amount of CHF223.00 plus incidentals.'] });
   is(lines.length, 1);
   is(lines[0].kind, 'hotel');
   is(lines[0].vendor, null);
+  is(lines[0].currency, 'CHF');
+  is(lines[0].amount, 223);
   is(lines[0].confirmation, 'SAB1');
 });
 

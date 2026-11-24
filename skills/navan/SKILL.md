@@ -163,9 +163,9 @@ retry.
 
 | Charge | Concur vendor | Notes |
 |---|---|---|
-| Airfare | `NVN-AL-<bookingId>` | amount = booking total minus trip fee; `ticketNumber` is the e-ticket (same as the flight `confirmation`, e.g. `KDMDXPL`), which is what Concur's airfare `ticketNumber` field wants |
+| Airfare | `NVN-AL-<bookingId>` | amount = the provider (airline) price; the trip fee is a separate charge; `ticketNumber` is the e-ticket (same as the flight `confirmation`, e.g. `KDMDXPL`), which is what Concur's airfare `ticketNumber` field wants |
 | Trip fee | `NVN  TRP FEE <bookingId>` (two spaces) | stays expense type `01145` |
-| Hotel | the hotel | charged at the property; the booking total is only an estimate |
+| Hotel | the hotel | charged at the property; amount is parsed from the payment note (excludes incidentals) |
 
 Amounts come from the trip booking, not the invoice PDF, so verify them against the Concur available expense. Airfare card charges arrive in Concur typed `01145` and must be changed to `TOLLS`; see the `concur` skill.
 

@@ -281,15 +281,19 @@ function expenseLines(it) {
   const total = numOrNull(charged ? charged.total : it.grandTotal);
   const pd = it.passengerDatum || (it.bookingData && it.bookingData.passengerData && it.bookingData.passengerData[0]) || {};
   const tickets = (pd.etickets && pd.etickets.length ? pd.etickets : (pd.eticket && pd.eticket !== 'Pending' ? [pd.eticket] : [])).filter(Boolean);
+  const quotes = (it.priceBreakdown && it.priceBreakdown.priceQuotes) || [];
+  const provider = quotes.map(q => q.providerPrice && q.providerPrice.total).filter(m => m && numOrNull(m.amount) != null);
+  const providerTotal = provider.length ? round2(provider.reduce((n, m) => n + m.amount, 0)) : null;
   const out = [];
   if (isFlight) {
-    out.push({ kind: 'air', vendor: 'NVN-AL-' + bookingId, currency: cur,
-      amount: total != null && tripFee != null ? round2(total - tripFee) : total,
+    out.push({ kind: 'air', vendor: 'NVN-AL-' + bookingId, currency: provider.length ? provider[0].currency || cur : cur,
+      amount: providerTotal != null ? providerTotal : (total != null && tripFee != null ? round2(total - tripFee) : total),
       concurType: 'TOLLS', ticketNumber: tickets[0] || null, ticketNumbers: tickets, confirmation: it.confirmationNumber || null });
     if (tripFee) out.push({ kind: 'fee', vendor: 'NVN  TRP FEE ' + bookingId, currency: cur, amount: round2(tripFee),
       concurType: '01145', ticketNumber: null, ticketNumbers: [], confirmation: null });
   } else {
-    out.push({ kind: 'hotel', vendor: null, currency: cur, amount: numOrNull(it.grandTotal),
+    const pay = (it.hotelPaymentDescription && it.hotelPaymentDescription[0] || '').match(/\b([A-Z]{3})\s?(\d[\d,]*(?:\.\d+)?)/);
+    out.push({ kind: 'hotel', vendor: null, currency: pay ? pay[1] : cur, amount: pay ? Number(pay[2].replace(/,/g, '')) : numOrNull(it.grandTotal),
       concurType: null, ticketNumber: null, ticketNumbers: [], confirmation: it.confirmationNumber || null,
       note: it.hotelPaymentDescription && it.hotelPaymentDescription[0] || null });
     if (numOrNull(it.tripFee) && it.tripFee > 0) out.push({ kind: 'fee', vendor: 'NVN  TRP FEE ' + bookingId, currency: cur, amount: round2(it.tripFee),
