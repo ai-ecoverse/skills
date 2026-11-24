@@ -125,11 +125,11 @@ Convenience API for the home page. Tiles seen:
 
 Full public REST surface. Cookie-auth works through page-context fetch.
 
-- `GET /api/v3.0/expense/reports?limit=N&offset=N&user=<email>&modifiedAfter=<iso>` — full historical report list, all statuses. Each item includes `Name, Total, CurrencyCode, Country, CreateDate, SubmitDate, ProcessingPaymentDate, PaidDate, ApprovalStatusName, PaymentStatusName, OwnerLoginID, ID, ...`
+- `GET /api/v3.0/expense/reports?limit=N&offset=N&user=<email>&modifiedDateAfter=<date>&modifiedDateBefore=<date>&createDateAfter=<date>&createDateBefore=<date>` — full historical report list, all statuses. Date filters accept `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS`; the name `modifiedAfter` is silently ignored (returns all history). Each item includes `Name, Total, CurrencyCode, Country, CreateDate, SubmitDate, ProcessingPaymentDate, PaidDate, ApprovalStatusName, PaymentStatusName, OwnerLoginID, ID, ...`
 - `GET /api/v3.0/expense/reports/{reportId}` — single report header + custom fields + OrgUnit values.
 - `GET /api/v3.0/expense/entries?reportID=<id>&limit=N&offset=N` — line items, optionally filtered to one report. Each item: `ExpenseID, ReportID, ExpenseTypeCode, ExpenseTypeName, SpendCategoryCode, TransactionDate, TransactionAmount, TransactionCurrencyCode, VendorDescription, BusinessPurpose, ...`
 - `GET /api/v3.0/expense/attendees?limit=N` — attendee book.
-- `GET /api/v3.0/expense/reportdigests?limit=N` — lighter-weight report list.
+- `GET /api/v3.0/expense/reportdigests?limit=N` — lighter-weight report list; accepts the same four date filters.
 - `GET /api/v3.0/common/locations?name=<prefix>&country=<ISO>&limit=N` — location reference data.
 
 Confirmed 404/410 (don't try):
