@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripShebang } from './script.js';
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const WRITES = /write|mkdir|rm|unlink|rename|chmod|append|copy|symlink|truncate|open/i;
@@ -80,7 +81,7 @@ const identity = new Proxy((s) => String(s ?? ''), {
 
 export async function runHelp(script, words, { denyFs = false, timeoutMs = 5000 } = {}) {
   const file = fileURLToPath(new URL(`../${script}`, import.meta.url));
-  const source = fs.readFileSync(file, 'utf8');
+  const source = stripShebang(fs.readFileSync(file, 'utf8'));
   const out = [];
   const err = [];
   const argv = ['node', file, ...words];

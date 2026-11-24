@@ -1,0 +1,18 @@
+{
+  "name": "@ai-ecoverse/gmail",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The gmail CLI for jsh: read, search, send and reply to Gmail, signed in through jerk. `npm install -g` or `pnpm add -g` this folder to put it on PATH.",
+  "bin": {
+    "gmail": "scripts/gmail.jsh"
+  },
+  "files": [
+    "scripts",
+    "references",
+    "SKILL.md"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24"
+  }
+}

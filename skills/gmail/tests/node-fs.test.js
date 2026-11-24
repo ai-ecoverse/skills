@@ -1,14 +1,14 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import test, { is } from 'tst';
 import { exitStub, load } from './extract.js';
 import { nodeFs } from './node-fs.js';
+import { readScript } from './script.js';
 
 // gmail download writes attachment bytes with Node's fs.promises, which
 // slicc-jsh (SLICC 7) and SLICC 6 both serve; the SLICC 6 promise dialect
 // fails under Node semantics (#487). Runs the shipped cmdDownload with the
 // Gmail API stubbed.
-const SOURCE = fs.readFileSync(path.join(process.cwd(), 'scripts/gmail.jsh'), 'utf8');
+const SOURCE = readScript(path.join(process.cwd(), 'scripts/gmail.jsh'));
 
 test('download writes every attachment into the --out directory', async () => {
   const vfs = nodeFs();
