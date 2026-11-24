@@ -1,9 +1,9 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import test, { is, ok } from 'tst';
 import { load } from './extract.js';
+import { readScript } from './script.js';
 
-const SOURCE = fs.readFileSync(path.join(process.cwd(), 'scripts/concur.jsh'), 'utf8');
+const SOURCE = readScript(path.join(process.cwd(), 'scripts/concur.jsh'));
 const { v3DateFilters, buildQS } = load(SOURCE, ['v3DateFilters', 'buildQS'], {});
 
 test('modifiedAfter is sent as modifiedDateAfter', () => {

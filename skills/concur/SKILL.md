@@ -59,6 +59,10 @@ concur submit <reportId>
 
 To flip an existing card transaction to personal/out-of-pocket: `concur set-payment <reportId> <expenseId> CASH`.
 
+## On a host
+
+`concur` also runs on macOS or Linux under [slicc-jsh](https://github.com/ai-ecoverse/slicc-jsh), over Chrome DevTools (`SLICC_CDP_URL`, else found). See [references/jsh-host.md](references/jsh-host.md).
+
 ## Authentication
 
 Concur authenticates with cookies on `*.concursolutions.com`. SLICC's localhost-origin `fetch` cannot send those cookies, so this skill **always issues requests from the page context** of an existing Concur tab (via the browser bridge).
