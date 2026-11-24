@@ -9,7 +9,7 @@ other than the source comments.
 The bearer token is scraped from an open Outlook tab: first the legacy plaintext
 MSAL cache, then — for clients with an encrypted cache — a live capture of the
 SPA's own `Authorization` header. Captured tokens are revalidated (`aud`, `exp`
-plus a safety margin) before use and cached in `/shared/.outlook-token`. See the
+plus a safety margin) before use and cached in `~/.local/share/outlook/token`. See the
 comment block at the top of `scripts/outlook.jsh` for the stale-token bug this
 guards against; don't simplify it.
 
@@ -35,7 +35,7 @@ rejecting it would break the legacy plaintext-cache path.
 Even with the scope gate a token can stop being usable mid-command, because Outlook
 rotates it. `owaGet`/`owaPost` therefore share `withAuthRetry()`: on **401 or 403
 only**, the failing token is added to an in-process reject set, blanked from
-`/shared/.outlook-token` so a later run cannot pick it up, re-extracted once from the
+`~/.local/share/outlook/token` so a later run cannot pick it up, re-extracted once from the
 browser, and the request is replayed **exactly once**. Never a loop.
 
 - If re-extraction yields the *same* token, `reacquireToken()` returns `null` and the
@@ -52,7 +52,7 @@ browser, and the request is replayed **exactly once**. Never a loop.
 Calendar and event requests send `Prefer: outlook.timezone="<zone>"`, so OWA
 returns `Start`/`End` as wall-clock times in that zone rather than UTC. The zone
 comes from `GET /me/MailboxSettings` → `TimeZone` and is cached in
-`/shared/.outlook-timezone` as `{ mailbox, timeZone, cachedAt }` — keyed on the
+`~/.local/share/outlook/timezone` as `{ mailbox, timeZone, cachedAt }` — keyed on the
 mailbox identity from the token's own claims, with a 24h TTL, so switching accounts
 or changing the zone in Outlook re-reads it. `--timezone` overrides.
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env jsh
 // outlook.jsh — Microsoft Outlook CLI for SLICC agents
 // Uses MSAL tokens from the Outlook browser tab's localStorage.
 //
@@ -58,11 +59,33 @@ const C = require('sliccy:color');
 const fs = require('fs'); // plain node-ish builtin, not a sliccy: module
 
 const OWA_BASE = 'https://outlook.office.com/api/v2.0';
-const TOKEN_PATH = '/shared/.outlook-token';
+const path = require('path');
+function cachePath(name) {
+  const data =
+    process.env.XDG_DATA_HOME ||
+    path.join(process.env.HOME || require('os').homedir(), '.local', 'share');
+  return path.join(data, 'outlook', name);
+}
+const LEGACY_TOKEN_PATH = '/shared/.outlook-token';
 // Cached mailbox timezone (GET /me/MailboxSettings → .TimeZone). Calendar times
 // are requested in this zone via the `Prefer: outlook.timezone` header; without
 // it OWA answers in UTC and an 11:30 CEST meeting prints as 09:30.
-const TZ_PATH = '/shared/.outlook-timezone';
+const LEGACY_TZ_PATH = '/shared/.outlook-timezone';
+
+async function writeCache(file, data) {
+  try {
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.writeFile(file, data);
+  } catch { /* cache is best-effort */ }
+}
+
+async function readCache(file, legacy) {
+  try {
+    return await fs.promises.readFile(file, 'utf8');
+  } catch (e) {
+    return await fs.promises.readFile(legacy, 'utf8');
+  }
+}
 const OUTLOOK_DOMAIN = 'outlook.office.com';
 // Microsoft has split Outlook across several hostnames as part of the migration to
 // the Microsoft 365 unified shell. Any of these tabs carries the same MSAL token
@@ -589,14 +612,14 @@ async function extractTokenFromBrowser() {
   // 1. Legacy plaintext MSAL cache.
   const cached = await extractTokenFromCache(tabId);
   if (cached) {
-    await fs.promises.writeFile(TOKEN_PATH, cached);
+    await writeCache(cachePath('token'), cached);
     return cached;
   }
 
   // 2. Encrypted-cache clients (outlook.cloud.microsoft): capture from network.
   const captured = await captureTokenFromNetwork(tabId);
   if (captured) {
-    await fs.promises.writeFile(TOKEN_PATH, captured);
+    await writeCache(cachePath('token'), captured);
     return captured;
   }
 
@@ -614,7 +637,7 @@ async function getToken() {
   // "open Outlook" guidance below. Mirrors the revalidation already applied to
   // network-captured tokens (see isFreshBearerCandidate).
   try {
-    const saved = (await fs.promises.readFile(TOKEN_PATH, 'utf8')).trim();
+    const saved = (await readCache(cachePath('token'), LEGACY_TOKEN_PATH)).trim();
     if (saved && isFreshBearerCandidate(saved)) return saved;
   } catch { /* no file */ }
 
@@ -656,8 +679,8 @@ async function reacquireToken(badToken) {
   if (badToken) {
     _rejectedTokens.add(badToken);
     try {
-      if ((await fs.promises.readFile(TOKEN_PATH, 'utf8')).trim() === badToken) {
-        await fs.promises.writeFile(TOKEN_PATH, '');
+      if ((await readCache(cachePath('token'), LEGACY_TOKEN_PATH)).trim() === badToken) {
+        await writeCache(cachePath('token'), '');
       }
     } catch { /* no cache file, or not writable — nothing to invalidate */ }
   }
@@ -754,7 +777,7 @@ async function owaPost(token, path, body) {
 // `--timezone` wins; otherwise use the mailbox's own zone, falling back to UTC if
 // it can't be read.
 //
-// The cache in TZ_PATH is scoped to the mailbox the current token belongs to and
+// The cache in cachePath('timezone') is scoped to the mailbox the current token belongs to and
 // carries a TTL. Without both, switching the browser to another Outlook account —
 // or changing the timezone in Outlook's settings — would keep reusing the old
 // value forever and label every printed time with a zone that isn't the one the
@@ -784,7 +807,7 @@ async function getTimezone(token) {
   try {
     // Older versions of this script wrote the bare zone name here; that parses as
     // invalid JSON and is simply treated as a miss.
-    const entry = JSON.parse(await fs.promises.readFile(TZ_PATH, 'utf8'));
+    const entry = JSON.parse(await readCache(cachePath('timezone'), LEGACY_TZ_PATH));
     const fresh = entry.cachedAt && Date.now() - entry.cachedAt < TZ_CACHE_TTL_MS;
     if (entry.timeZone && fresh && entry.mailbox === mailbox) {
       _timezone = entry.timeZone;
@@ -795,12 +818,10 @@ async function getTimezone(token) {
     const settings = await owaGet(token, '/me/MailboxSettings', { '$select': 'TimeZone' });
     if (settings && settings.TimeZone) {
       _timezone = settings.TimeZone;
-      try {
-        await fs.promises.writeFile(
-          TZ_PATH,
-          JSON.stringify({ mailbox, timeZone: _timezone, cachedAt: Date.now() })
-        );
-      } catch { /* cache is best-effort */ }
+      await writeCache(
+        cachePath('timezone'),
+        JSON.stringify({ mailbox, timeZone: _timezone, cachedAt: Date.now() })
+      );
       return _timezone;
     }
   } catch { /* fall through to UTC */ }
@@ -1749,7 +1770,8 @@ Monday options:
 
 Authentication:
   Token is extracted automatically from the Outlook browser tab
-  (MSAL localStorage). Falls back to /workspace/.outlook-token.
+  (MSAL localStorage). Cached in ~/.local/share/outlook/token
+  ($XDG_DATA_HOME/outlook/token); legacy /shared/.outlook-token is still read.
 `);
 }
 

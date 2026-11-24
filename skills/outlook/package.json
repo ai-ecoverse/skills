@@ -1,0 +1,21 @@
+{
+  "name": "@ai-ecoverse/outlook",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The outlook CLI for jsh. It reads and sends Outlook (Office 365) mail and calendar with a token taken from a logged-in outlook.office.com tab in Chrome, over an existing DevTools Protocol connection (SLICC_CDP_URL, else found: SLICC's Chrome, or 127.0.0.1:9222). `npm install -g` or `pnpm add -g` this folder to put it on PATH.",
+  "bin": {
+    "outlook": "scripts/outlook.jsh"
+  },
+  "files": [
+    "scripts",
+    "references",
+    "SKILL.md"
+  ],
+  "dependencies": {
+    "@ai-ecoverse/sliccy-browser": "0.1.44"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24"
+  }
+}
