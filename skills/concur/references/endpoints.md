@@ -250,3 +250,8 @@ were established by probing error *counts* against the live endpoint.
 - **`FindMatchingAvailableExpenses`** returns `match: null` across currencies, so a pending USD
   e-receipt and its posted EUR card charge are never auto-reconciled; the duplicate has to be
   deleted by hand.
+
+- **`GetAvailableExpenses` / `MoveAvailableExpensesToReport` variables (measured).** Both work with `{userId, contextRole, page, size}` and `{userId, contextRole, ids, reportId}` respectively; passing `params: {page, size}` (or any `params`) returns HTTP 400. The returned ids equal the smartExpenseIds.
+- **Form pick-lists have `options: null`.** On an existing report/entry form, `custom14` (Business Purpose) and `custom15` (Class of Service) carry `list.id` and no `options`; resolve items with `GetFormListItems` (`concur list-items`). `GetNewReportFormFields` does inline the `custom14` options. List-item ids are upper-case on forms and lower-case from `GetFormListItems`; Concur treats them case-insensitively.
+- **v3 `Custom14.ListItemID`** (e.g. `gWp03o$py5c3J3KG3i2yelsjiNe$puOTPXWgQ`) is a different id namespace from the GraphQL list-item id; map it through its `Value`/`Code`.
+- **`GetExpenseFormExpenseTypes` full list:** needs `$filterBy` and `$reportOwnerUserId` in addition to `{userId, contextRole, policyId}`; with `filterBy.isItemization: false` and no parent it returns every type (108 on Adobe's policy).
