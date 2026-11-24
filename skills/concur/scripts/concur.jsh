@@ -1771,9 +1771,6 @@ const commands = {
     return { ok: true, reportId, purposeListItemId: purpose.id, purpose: purpose.value };
   },
 
-  // List the Business Purpose choices (id, code, label) for a new report, or
-  // for an existing report's form.
-  // Usage: concur purposes [<reportId>] [--policy=<policyId>]
   async purposes(...args) {
     const opts = parseFlags(args, { policy: '' });
     const reportId = args.find((a) => typeof a === 'string' && !a.startsWith('-'));
@@ -1782,9 +1779,6 @@ const commands = {
     return items.map((i) => ({ id: normalizeListId(i.id), code: i.code, label: i.value }));
   },
 
-  // List unattached card charges (GetAvailableExpenses). The ids are the ids
-  // `move` takes (equal to smartExpenseIds).
-  // Usage: concur available [--since=YYYY-MM-DD] [--json]
   async available(...args) {
     const opts = parseFlags(args, { since: '', json: '' });
     const since = validateAvailableSince(opts.since);
@@ -1793,8 +1787,6 @@ const commands = {
     console.log(formatAvailable(rows));
   },
 
-  // Move available card charges onto a report (MoveAvailableExpensesToReport).
-  // Usage: concur move <reportId> <availableExpenseId>…
   async move(reportId, ...args) {
     const ids = args.filter((a) => typeof a === 'string' && !a.startsWith('-'));
     if (!reportId || !ids.length) {
@@ -1808,8 +1800,6 @@ const commands = {
     return res;
   },
 
-  // Set arbitrary entry fields via UpdateExistingExpenseEntry.
-  // Usage: concur set-fields <reportId> <expenseId> --fields='<json>' [--ticket=<no>] [--class=<label>]
   async 'set-fields'(reportId, expenseId, ...rest) {
     const flags = parseFlags(rest, {});
     if (!reportId || !expenseId || !(flags.fields || flags.ticket || flags.class)) {
@@ -1831,9 +1821,6 @@ const commands = {
     return summarizeEntryUpdate(res, expenseId, { fields });
   },
 
-  // List expense types for a policy (GetExpenseFormExpenseTypes), which
-  // `recent-types` cannot: it only returns recently used ones.
-  // Usage: concur types [--policy=<policyId>] [--search=text] [--parent=<typeId>]
   async types(...args) {
     const opts = parseFlags(args, { policy: '', search: '', parent: '' });
     return listExpenseTypes({ policyId: opts.policy, search: opts.search, parent: opts.parent });
