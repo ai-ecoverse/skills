@@ -775,6 +775,280 @@ async function itemizeHotel(reportId, expenseId, billJson) {
 
 // ----------------- commands -----------------
 
+function normalizeListId(id) {
+  const s = String(id);
+  return /^[0-9a-f]{32}$/i.test(s) ? s.toUpperCase() : s;
+}
+
+function pickListItem(items, input) {
+  const q = String(input == null ? '' : input).trim().toLowerCase();
+  if (!q) return null;
+  const by = (fn) => items.filter(fn);
+  const exact = by((i) => String(i.id).toLowerCase() === q)[0]
+    || by((i) => String(i.value || '').toLowerCase() === q)[0]
+    || by((i) => String(i.code == null ? '' : i.code).toLowerCase() === q)[0];
+  if (exact) return exact;
+  const prefix = by((i) => String(i.value || '').toLowerCase().startsWith(q));
+  return prefix.length === 1 ? prefix[0] : null;
+}
+
+function describeListItems(items) {
+  return items.map((i) => `  ${String(i.code == null ? '' : i.code).padEnd(4)} ${i.value}  (${normalizeListId(i.id)})`).join('\n');
+}
+
+async function listItemsForField(field) {
+  if (field?.options?.length) return field.options.map((o) => ({ id: o.id, code: o.code, value: o.value }));
+  const listId = field?.list?.id;
+  if (!listId) return [];
+  const r = await callOp('GetFormListItems', {
+    listInformation: { id: listId, isExternal: null },
+    includeTotalPages: true, sessionId: null,
+  }, 'spend');
+  return (r?.CDS_spend?.list?.items || []).map((i) => ({ id: i.id, code: i.code, value: i.value }));
+}
+
+async function defaultPolicyId() {
+  const userId = await getUserId();
+  const policies = await callOp('GetPolicies', { userId, contextRole: 'TRAVELER' }, 'spend', { soft: true });
+  const list = policies?.employee?.expensePolicies?.policies || [];
+  const def = list.find((p) => p.isDefault) || list[0];
+  return def?.id || ADOBE_INTL_POLICY.policyId;
+}
+
+async function purposeItems({ reportId, policyId }) {
+  const userId = await getUserId();
+  let fields;
+  if (reportId) {
+    const d = await callOp('GetReportFormFields', { userId, contextRole: 'TRAVELER', reportId });
+    fields = d?.existingReportForm?.fields;
+  } else {
+    const d = await callOp('GetNewReportFormFields', { userId, contextRole: 'TRAVELER', policyId });
+    fields = d?.newReportForm?.fields;
+  }
+  const field = (fields || []).find((f) => f.id === 'custom14');
+  if (!field) throw new Error('This report form has no Business Purpose (custom14) field.');
+  return listItemsForField(field);
+}
+
+async function purposeFromV3Id(input) {
+  const since = new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10);
+  const body = await pageFetch(`${HOST_API}/api/v3.0/expense/reports${buildQS({ limit: 100, createDateAfter: since })}`, { soft: true });
+  const hit = (body?.Items || []).find((r) => r.Custom14?.ListItemID === input);
+  return hit ? hit.Custom14 : null;
+}
+
+async function resolveBusinessPurpose(input, scope) {
+  const items = await purposeItems(scope);
+  let item = pickListItem(items, input);
+  if (!item && /[$]|^[A-Za-z0-9_-]{30,}$/.test(String(input)) && !/^[0-9a-f]{32}$/i.test(String(input))) {
+    const v3 = await purposeFromV3Id(String(input));
+    if (v3) item = pickListItem(items, v3.Value) || pickListItem(items, v3.Code);
+  }
+  if (!item) {
+    throw new Error(`No Business Purpose matches "${input}". Pass a list-item id, an exact label, a unique label prefix or a code. Options:\n${describeListItems(items)}`);
+  }
+  return { id: normalizeListId(item.id), code: item.code, value: item.value };
+}
+
+function isEmptyFieldValue(v) {
+  if (v == null) return true;
+  const keys = Object.keys(v).filter((k) => k !== '__typename' && k !== 'isValid');
+  if (!keys.length) return true;
+  return keys.every((k) => v[k] == null || v[k] === '');
+}
+
+function missingRequiredFields(form) {
+  const fields = form?.existingExpenseForm?.mainForm?.fields || [];
+  return fields
+    .filter((f) => f.isRequired && f.accessMode !== 'HIDDEN' && f.accessMode !== 'READ_ONLY' && isEmptyFieldValue(f.value))
+    .map((f) => ({ id: f.id, label: f.label }));
+}
+
+function missingFieldHint(reportId, expenseId, missing) {
+  const parts = [];
+  for (const m of missing) {
+    if (m.id === 'ticketNumber') parts.push('--ticket=<ticketNumber>');
+    else if (m.id === 'custom15') parts.push('--class=Economy');
+  }
+  const rest = missing.filter((m) => m.id !== 'ticketNumber' && m.id !== 'custom15');
+  if (rest.length) parts.push(`--fields='{${rest.map((m) => `"${m.id}":…`).join(',')}}'`);
+  return `concur set-fields ${reportId} ${expenseId} ${parts.join(' ')}`;
+}
+
+async function entryForm(reportId, expenseId, opts = {}) {
+  const userId = await getUserId();
+  return callOp('GetExistingExpenseForm', { userId, contextRole: 'TRAVELER', reportId, expenseId }, 'spend', opts);
+}
+
+async function resolveEntryListItem(reportId, expenseId, fieldId, input) {
+  const form = await entryForm(reportId, expenseId);
+  const field = (form?.existingExpenseForm?.mainForm?.fields || []).find((f) => f.id === fieldId);
+  if (!field) throw new Error(`Entry ${expenseId} has no ${fieldId} field.`);
+  const items = await listItemsForField(field);
+  const item = pickListItem(items, input);
+  if (!item) throw new Error(`No ${field.label || fieldId} matches "${input}". Options:\n${describeListItems(items)}`);
+  return normalizeListId(item.id);
+}
+
+async function updateEntryFields(reportId, expenseId, fields, policyId) {
+  const userId = await getUserId();
+  const pid = policyId || await getReportPolicyId(reportId);
+  return callOp('UpdateExistingExpenseEntry', {
+    taxFields: null, userId, contextRole: 'TRAVELER', isTrexEnabled: true,
+    reportId, expenseId, shouldCopyDownFields: false, fields,
+    expenseTypeId: '', policyId: pid, updateRecentExpenseType: false, expenseListDetailFormId: null,
+  });
+}
+
+function entryExceptionCodes(res) {
+  const codes = new Set();
+  (function walk(o) {
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    if (o && typeof o === 'object') {
+      if (o.exceptionCode) codes.add(o.exceptionCode);
+      for (const k in o) walk(o[k]);
+    }
+  })(res?.updateExpense?.entryExceptions);
+  return [...codes];
+}
+
+function summarizeEntryUpdate(res, expenseId, extra = {}) {
+  const u = res?.updateExpense;
+  const type = u?.entry?.expenseType || u?.entry?.summary?.expenseType || null;
+  return {
+    ok: !!u?.id,
+    expenseId: u?.id || expenseId,
+    ...(type ? { expenseTypeId: type.id, expenseType: type.name } : {}),
+    ...extra,
+    exceptions: entryExceptionCodes(res),
+  };
+}
+
+function summarizeAttach(attached, expenseId, uploadedImageId) {
+  return { ok: !!attached?.id, expenseId, imageId: attached?.receiptImageId || uploadedImageId };
+}
+
+function availableRow(e) {
+  const amt = e.transactionAmount || e.postedAmount || e.estimatedAmount || {};
+  return {
+    id: e.id,
+    date: e.transactionDate || null,
+    vendor: e.vendor || null,
+    amount: amt.value ?? null,
+    currency: amt.currencyCode || null,
+    type: e.expenseType?.code || e.expenseType?.id || null,
+    hasReceipt: !!(e.receiptImageId || e.unifiedReceiptImageId || e.eReceipt?.receiptImageId),
+  };
+}
+
+function filterAvailable(rows, since) {
+  return since ? rows.filter((r) => !r.date || r.date >= since) : rows;
+}
+
+async function fetchAvailable() {
+  const userId = await getUserId();
+  const out = [];
+  for (let page = 1; page <= 50; page++) {
+    const d = await callOp('GetAvailableExpenses', { userId, contextRole: 'TRAVELER', page, size: 100 });
+    const a = d?.employee?.availableExpensesWithPagination;
+    out.push(...(a?.availableExpenses || []));
+    if (!a?.pagination || page >= a.pagination.totalPages) break;
+  }
+  return out;
+}
+
+function formatAvailable(rows) {
+  const lines = rows.map((r) => [r.id, r.date || '—', String(r.vendor || '—').slice(0, 28).padEnd(28), `${r.amount ?? '—'} ${r.currency || ''}`.padEnd(14), String(r.type || '—').padEnd(8), r.hasReceipt ? 'receipt' : 'no-receipt'].join('  '));
+  return lines.join('\n') || 'No available expenses.';
+}
+
+function validateAvailableSince(since) {
+  if (since && !/^\d{4}-\d{2}-\d{2}$/.test(String(since))) throw new Error(`--since must be YYYY-MM-DD, got "${since}"`);
+  return since || '';
+}
+
+async function moveAvailable(reportId, ids) {
+  const userId = await getUserId();
+  const d = await callOp('MoveAvailableExpensesToReport', { userId, contextRole: 'TRAVELER', ids, reportId });
+  const r = d?.employee?.moveAvailableExpensesToReport;
+  const errors = (r?.errors || []).filter(Boolean);
+  return { ok: !!r?.status?.success && !errors.length, reportId, moved: ids.length, ids, errors };
+}
+
+function allTypesFilter() {
+  return {
+    isItemization: false,
+    itemizationsNotAllowed: false,
+    japanPublicTransportation: false,
+    companyCarMileage: true,
+    personalCarMileage: true,
+    cashAdvance: false,
+  };
+}
+
+async function listExpenseTypes({ policyId, search, parent }) {
+  const userId = await getUserId();
+  const pid = policyId || await defaultPolicyId();
+  const d = await callOp('GetExpenseFormExpenseTypes', {
+    userId, contextRole: 'TRAVELER', policyId: pid, reportOwnerUserId: userId,
+    filterBy: allTypesFilter(), parentExpenseTypeId: parent || null,
+  });
+  const q = String(search || '').toLowerCase();
+  return (d?.employee?.expenseTypes || [])
+    .map((t) => ({ id: t.id, name: t.name, parentName: t.parentName || null, isGroupHeader: !t.parentName }))
+    .filter((t) => !q || `${t.id} ${t.name} ${t.parentName || ''}`.toLowerCase().includes(q));
+}
+
+async function createReport(opts) {
+  const userId = await getUserId();
+  let policyId = opts.policy;
+  if (!policyId) {
+    const policies = await callOp('GetPolicies', { userId, contextRole: 'TRAVELER' }, 'spend', { soft: true });
+    const list = policies?.employee?.expensePolicies?.policies || [];
+    const def = list.find((p) => p.isDefault) || list[0];
+    policyId = def?.id || ADOBE_INTL_POLICY.policyId;
+  }
+  const purpose = opts.purpose ? await resolveBusinessPurpose(opts.purpose, { policyId }) : null;
+  const created = await callOp('CreateReportHeader', {
+    userId, contextRole: 'TRAVELER',
+    fields: { name: opts.name, policyId },
+  });
+  const reportId = created?.createReport?.reportId;
+  if (!reportId) return { ok: false, raw: created };
+  const out = { reportId, name: opts.name, policyId };
+  // Business purpose is required to submit on most policies, so set it now
+  // (and copy it down to every line) when the caller supplied one.
+  if (opts.purpose || opts.comment) {
+    // Every EDITABLE field in UpdateReportFieldsInput is wrapped as
+    // { value: … } — including `comment`. A bare string is rejected, and
+    // because the whole mutation is one input object that also loses a
+    // `--purpose` supplied in the same invocation. `reportSource` and
+    // `copyDownRequested` are control params, not form fields, so they stay bare.
+    const fields = { reportSource: 'WEB', copyDownRequested: true };
+    if (purpose) fields.custom14 = { value: purpose.id };
+    if (opts.comment) fields.comment = { value: opts.comment };
+    const upd = await callOp('UpdateReportHeader',
+      { userId, contextRole: 'TRAVELER', reportId, fields }, 'spend', { soft: true });
+    out.headerUpdated = !!upd;
+    if (purpose) { out.purposeListItemId = purpose.id; out.purpose = purpose.value; }
+    // The report itself already exists and its id must reach the caller, so
+    // this cannot just exit(1) — but a silent partial success would leave a
+    // report that fails to submit for want of a business purpose. Say so
+    // loudly, on stderr, with the command that repairs it.
+    if (!upd) {
+      const missed = [opts.purpose && 'business purpose', opts.comment && 'comment'].filter(Boolean).join(' + ');
+      out.warning = `report ${reportId} was created but the header update failed — ${missed} NOT applied`;
+      console.error(`concur new-report: ${out.warning}.`);
+      if (purpose) console.error(`  repair with: concur report-purpose ${reportId} ${purpose.id}`);
+      const f = softFailure();
+      if (f?.kind === 'graphql') console.error('  cause:', JSON.stringify(f.errors));
+      else if (f?.kind === 'http') console.error(`  cause: HTTP ${f.status}`);
+      else if (f?.kind === 'network') console.error(`  cause: network error: ${f.message}`);
+    }
+  }
+  return out;
+}
+
 const commands = {
   async me() {
     const userId = await getUserId();
@@ -808,57 +1082,12 @@ const commands = {
   async 'new-report'(...args) {
     const opts = parseFlags(args, { name: '', policy: '', purpose: '', comment: '' });
     if (!opts.name) {
-      console.error('Usage: concur new-report --name="<report name>" [--policy=<policyId>] [--purpose=<listItemId>] [--comment="..."]');
-      console.error('  --purpose takes a Business Purpose list-item id: concur list-items <businessPurposeListId>');
+      console.error('Usage: concur new-report --name="<report name>" [--policy=<policyId>] [--purpose=<id|label|code>] [--comment="..."]');
+      console.error('  --purpose takes a Business Purpose list-item id, label (exact or unique prefix) or code: concur purposes');
       console.error('  Everything else (cost center, company code, site location) defaults from your profile.');
       process.exit(1);
     }
-    const userId = await getUserId();
-    let policyId = opts.policy;
-    if (!policyId) {
-      const policies = await callOp('GetPolicies', { userId, contextRole: 'TRAVELER' }, 'spend', { soft: true });
-      const list = policies?.employee?.expensePolicies?.policies || [];
-      const def = list.find((p) => p.isDefault) || list[0];
-      policyId = def?.id || ADOBE_INTL_POLICY.policyId;
-    }
-    const created = await callOp('CreateReportHeader', {
-      userId, contextRole: 'TRAVELER',
-      fields: { name: opts.name, policyId },
-    });
-    const reportId = created?.createReport?.reportId;
-    if (!reportId) return { ok: false, raw: created };
-    const out = { reportId, name: opts.name, policyId };
-    // Business purpose is required to submit on most policies, so set it now
-    // (and copy it down to every line) when the caller supplied one.
-    if (opts.purpose || opts.comment) {
-      // Every EDITABLE field in UpdateReportFieldsInput is wrapped as
-      // { value: … } — including `comment`. A bare string is rejected, and
-      // because the whole mutation is one input object that also loses a
-      // `--purpose` supplied in the same invocation. `reportSource` and
-      // `copyDownRequested` are control params, not form fields, so they stay bare.
-      const fields = { reportSource: 'WEB', copyDownRequested: true };
-      if (opts.purpose) fields.custom14 = { value: opts.purpose };
-      if (opts.comment) fields.comment = { value: opts.comment };
-      const upd = await callOp('UpdateReportHeader',
-        { userId, contextRole: 'TRAVELER', reportId, fields }, 'spend', { soft: true });
-      out.headerUpdated = !!upd;
-      if (opts.purpose) out.purposeListItemId = opts.purpose;
-      // The report itself already exists and its id must reach the caller, so
-      // this cannot just exit(1) — but a silent partial success would leave a
-      // report that fails to submit for want of a business purpose. Say so
-      // loudly, on stderr, with the command that repairs it.
-      if (!upd) {
-        const missed = [opts.purpose && 'business purpose', opts.comment && 'comment'].filter(Boolean).join(' + ');
-        out.warning = `report ${reportId} was created but the header update failed — ${missed} NOT applied`;
-        console.error(`concur new-report: ${out.warning}.`);
-        if (opts.purpose) console.error(`  repair with: concur report-purpose ${reportId} ${opts.purpose}`);
-        const f = softFailure();
-        if (f?.kind === 'graphql') console.error('  cause:', JSON.stringify(f.errors));
-        else if (f?.kind === 'http') console.error(`  cause: HTTP ${f.status}`);
-        else if (f?.kind === 'network') console.error(`  cause: network error: ${f.message}`);
-      }
-    }
-    return out;
+    return createReport(opts);
   },
 
   // Delete expense entries (or itemizations) from an unsubmitted report.
@@ -1169,12 +1398,12 @@ const commands = {
 
   async 'change-type'(reportId, expenseId, expenseTypeId, ...args) {
     if (!reportId || !expenseId || !expenseTypeId) {
-      console.error('Usage: concur change-type <reportId> <expenseId> <expenseTypeId> [--policy=<policyId>]');
+      console.error('Usage: concur change-type <reportId> <expenseId> <expenseTypeId> [--policy=<policyId>] [--json]');
       console.error('Common typeIds: 01000 (Meals & Entertainment w/ Customers), CARRT (Car Rental), HOTEL, AIRFR, MEALS (Daily Meals).');
       console.error('Run `concur policies` to list expense policies and their types.');
       process.exit(1);
     }
-    const opts = parseFlags(args, { policy: '' });
+    const opts = parseFlags(args, { policy: '', json: '' });
     const userId = await getUserId();
     let policyId = opts.policy;
     if (!policyId) {
@@ -1184,7 +1413,7 @@ const commands = {
       if (!def) { console.error('No expense policies found'); process.exit(1); }
       policyId = def.id;
     }
-    return callOp('UpdateExistingExpenseEntry', {
+    const res = await callOp('UpdateExistingExpenseEntry', {
       taxFields: null,
       userId,
       contextRole: 'TRAVELER',
@@ -1198,16 +1427,18 @@ const commands = {
       updateRecentExpenseType: true,
       expenseListDetailFormId: null,
     });
+    if (opts.json === 'true') return res;
+    return summarizeEntryUpdate(res, expenseId, { expenseTypeId });
   },
 
   async 'attach-receipt'(reportId, expenseId, localPath, ...args) {
     if (!reportId || !expenseId || !localPath) {
-      console.error('Usage: concur attach-receipt <reportId> <expenseId> <localPath> [--no-convert] [--max-bytes=N]');
+      console.error('Usage: concur attach-receipt <reportId> <expenseId> <localPath> [--no-convert] [--max-bytes=N] [--json]');
       console.error('Image is auto-converted to JPEG via ImageMagick if it is not already.');
       console.error('Files larger than --max-bytes (default 800000) are auto-downscaled to a 1800px JPEG q=75.');
       process.exit(1);
     }
-    const opts = parseFlags(args, { 'no-convert': '', 'max-bytes': '800000' });
+    const opts = parseFlags(args, { 'no-convert': '', 'max-bytes': '800000', json: '' });
     const maxBytes = parseInt(opts['max-bytes'], 10) || 800_000;
 
     // Pre-flight: refuse early if the report is locked. Saves a 4 MB upload
@@ -1291,10 +1522,9 @@ const commands = {
     const attachRes = await callOp('AttachImage', {
       userId, contextRole: 'TRAVELER', reportId, expenseId, imageId,
     });
-    return {
-      uploaded: { imageId, href: upBody.href },
-      attached: attachRes?.employee?.expenseReport?.entry?.attachImage,
-    };
+    const attached = attachRes?.employee?.expenseReport?.entry?.attachImage;
+    if (opts.json === 'true') return { uploaded: { imageId, href: upBody.href }, attached };
+    return summarizeAttach(attached, expenseId, imageId);
   },
 
   // -----------------------------------------------------------------
@@ -1525,19 +1755,90 @@ const commands = {
   // Set a report header's Business Purpose (custom14) and copy it down to all
   // lines. Pass the list-item id from `concur list-items <businessPurposeListId>`.
   // Usage: concur report-purpose <reportId> <listItemId>
-  async ['report-purpose'](reportId, listItemId) {
-    if (!reportId || !listItemId) {
-      console.error('Usage: concur report-purpose <reportId> <listItemId>');
-      console.error('  (get the id from `concur list-items <businessPurposeListId>`)');
+  async ['report-purpose'](reportId, input) {
+    if (!reportId || !input) {
+      console.error('Usage: concur report-purpose <reportId> <id|label|code>');
+      console.error('  (see the choices with `concur purposes <reportId>`)');
       process.exit(1);
     }
     await assertReportMutable(reportId, 'set the report business purpose');
+    const purpose = await resolveBusinessPurpose(input, { reportId });
     const userId = await getUserId();
-    return callOp('UpdateReportHeader', {
+    await callOp('UpdateReportHeader', {
       userId, contextRole: 'TRAVELER', reportId,
-      fields: { custom14: { value: listItemId }, reportSource: 'WEB', copyDownRequested: true },
+      fields: { custom14: { value: purpose.id }, reportSource: 'WEB', copyDownRequested: true },
     });
+    return { ok: true, reportId, purposeListItemId: purpose.id, purpose: purpose.value };
   },
+
+  // List the Business Purpose choices (id, code, label) for a new report, or
+  // for an existing report's form.
+  // Usage: concur purposes [<reportId>] [--policy=<policyId>]
+  async purposes(...args) {
+    const opts = parseFlags(args, { policy: '' });
+    const reportId = args.find((a) => typeof a === 'string' && !a.startsWith('-'));
+    const policyId = reportId ? null : (opts.policy || await defaultPolicyId());
+    const items = await purposeItems({ reportId, policyId });
+    return items.map((i) => ({ id: normalizeListId(i.id), code: i.code, label: i.value }));
+  },
+
+  // List unattached card charges (GetAvailableExpenses). The ids are the ids
+  // `move` takes (equal to smartExpenseIds).
+  // Usage: concur available [--since=YYYY-MM-DD] [--json]
+  async available(...args) {
+    const opts = parseFlags(args, { since: '', json: '' });
+    const since = validateAvailableSince(opts.since);
+    const rows = filterAvailable((await fetchAvailable()).map(availableRow), since);
+    if (opts.json === 'true') return rows;
+    console.log(formatAvailable(rows));
+  },
+
+  // Move available card charges onto a report (MoveAvailableExpensesToReport).
+  // Usage: concur move <reportId> <availableExpenseId>…
+  async move(reportId, ...args) {
+    const ids = args.filter((a) => typeof a === 'string' && !a.startsWith('-'));
+    if (!reportId || !ids.length) {
+      console.error('Usage: concur move <reportId> <availableExpenseId> [<availableExpenseId>…]');
+      console.error('  list candidates with `concur available`');
+      process.exit(1);
+    }
+    await assertReportMutable(reportId, 'accept moved expenses');
+    const res = await moveAvailable(reportId, ids);
+    if (!res.ok) throw new Error(`move failed: ${res.errors.join('; ') || 'status.success was false'}`);
+    return res;
+  },
+
+  // Set arbitrary entry fields via UpdateExistingExpenseEntry.
+  // Usage: concur set-fields <reportId> <expenseId> --fields='<json>' [--ticket=<no>] [--class=<label>]
+  async 'set-fields'(reportId, expenseId, ...rest) {
+    const flags = parseFlags(rest, {});
+    if (!reportId || !expenseId || !(flags.fields || flags.ticket || flags.class)) {
+      console.error('Usage: concur set-fields <reportId> <expenseId> --fields=\'<json>\' [--ticket=<ticketNumber>] [--class=<Economy|Business|…>] [--policy=<id>] [--json]');
+      console.error('  --fields is merged into UpdateExpenseFieldsInput, e.g. \'{"ticketNumber":"KDMDXPL","custom15":{"value":"<listItemId>"}}\'');
+      console.error('  --ticket / --class are airfare shortcuts; --class resolves the label from the entry form.');
+      process.exit(1);
+    }
+    let fields = {};
+    if (flags.fields) {
+      try { fields = JSON.parse(flags.fields); } catch { throw new Error('--fields must be valid JSON'); }
+      if (!fields || typeof fields !== 'object' || Array.isArray(fields)) throw new Error('--fields must be a JSON object');
+    }
+    await assertReportMutable(reportId, 'set entry fields');
+    if (flags.ticket) fields.ticketNumber = flags.ticket;
+    if (flags.class) fields.custom15 = { value: await resolveEntryListItem(reportId, expenseId, 'custom15', flags.class) };
+    const res = await updateEntryFields(reportId, expenseId, fields, flags.policy);
+    if (flags.json === 'true') return res;
+    return summarizeEntryUpdate(res, expenseId, { fields });
+  },
+
+  // List expense types for a policy (GetExpenseFormExpenseTypes), which
+  // `recent-types` cannot: it only returns recently used ones.
+  // Usage: concur types [--policy=<policyId>] [--search=text] [--parent=<typeId>]
+  async types(...args) {
+    const opts = parseFlags(args, { policy: '', search: '', parent: '' });
+    return listExpenseTypes({ policyId: opts.policy, search: opts.search, parent: opts.parent });
+  },
+
 
   // Report status + all validation exceptions (error/warning messages) for a
   // report. Surfaces blocking issues like ITEMREQ ("Itemizations are required")
@@ -1578,9 +1879,19 @@ const commands = {
         for (const k in o) walk(o[k]);
       }
     })(data);
-    const entries = Object.keys(exById).map(id => ({
-      expenseId: id, ...(meta[id] || {}), exceptions: exById[id],
-    }));
+    const entries = [];
+    for (const id of Object.keys(exById)) {
+      const entry = { expenseId: id, ...(meta[id] || {}), exceptions: exById[id] };
+      if (exById[id].some((x) => x.code === 'MISSREQFLD')) {
+        const form = await entryForm(reportId, id, { soft: true });
+        const missing = form ? missingRequiredFields(form) : [];
+        if (missing.length) {
+          entry.missingRequiredFields = missing;
+          entry.fixWith = missingFieldHint(reportId, id, missing);
+        }
+      }
+      entries.push(entry);
+    }
     const allBlocking = [...headerEx, ...entries.flatMap(e => e.exceptions)].some(x => x.isBlocking);
     return {
       reportId,
@@ -1697,7 +2008,12 @@ const commands = {
         'concur report-v3 A1B2C3D4E5F60718293A         # REST v3: report header',
         'concur entries-v3 --reportId=A1B2C3D4E5F60718293A',
         'concur expenses A1B2C3D4E5F60718293A',
-        'concur new-report --name="Trip addendum" --purpose=<listItemId>',
+        'concur purposes                               # business purposes (id, code, label)',
+        'concur new-report --name="Trip addendum" --purpose="Internal Stakeholder Meetings / Review"',
+        'concur available --since=2026-10-01           # unattached card charges',
+        'concur move A1B2C3D4E5F60718293A <availableExpenseId>',
+        'concur set-fields A1B2C3D4E5F60718293A <expenseId> --ticket=KDMDXPL --class=Economy',
+        'concur types --search=airfare                 # every expense type of the policy',
         'concur delete-expense A1B2C3D4E5F60718293A <expenseId> --dry-run',
         'concur delete-expense A1B2C3D4E5F60718293A <expenseId> --confirm',
         'concur delete-report A1B2C3D4E5F60718293A --dry-run',

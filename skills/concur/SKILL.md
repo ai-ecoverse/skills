@@ -29,7 +29,7 @@ End-to-end sequence for filing a cash/personal expense report from scratch. Vali
 
 ```bash
 # 1. Create the report header (or reuse an existing reportId)
-concur new-report --name="Trip addendum" --purpose=<businessPurposeListItemId>
+concur new-report --name="Trip addendum" --purpose="Internal Stakeholder Meetings / Review"
 #    Checkpoint: capture the returned reportId.
 
 # 2. Add each out-of-pocket line. Meals/lodging: isExpensePartOfTravelAllowance true;
@@ -56,6 +56,30 @@ concur submit <reportId>
 #    Checkpoint: verify with `concur report-v3 <reportId>` (ApprovalStatusName changes from
 #    "Not Submitted" to "Pending Audit Review"/"Submitted & Pending Approval").
 ```
+
+## Workflow: card charges (e.g. Navan) to a report
+
+Trip bookings paid with the corporate card show up as available card charges, not as entries. `navan expenses <tripId>` (navan skill) previews what they will look like.
+
+```bash
+concur available --since=2026-10-01                     # 1. find the charges (vendors NVN-AL-<bookingId>, NVN  TRP FEE <bookingId>, the hotel)
+concur new-report --name="Basel trip" --purpose="Internal Stakeholder Meetings / Review"   # 2. purpose is resolved first
+concur move <reportId> <availableId> <availableId> …    # 3. attach the charges to the report
+concur expenses <reportId>                              #    note the new expenseIds
+concur change-type <reportId> <airfareExpenseId> TOLLS  # 4. airfare arrives typed 01145; see below
+concur set-fields <reportId> <airfareExpenseId> --ticket=KDMDXPL --class=Economy   # 5. airfare required fields
+concur itemize hotel <reportId> <hotelExpenseId> bill.json   # 6. hotel folio -> room + tax per night
+concur itinerary <reportId> itinerary.json              # 7. German travel allowance (meals in Germany)
+concur attach-receipt <reportId> <expenseId> receipt.pdf --no-convert   # 8. receipts (navan invoice --download gives the PDF)
+concur exceptions <reportId>                            # 9. must report hasBlockingExceptions: false
+concur submit <reportId>                                # 10. submit
+```
+
+**Navan airfare is mistyped on arrival.** Navan airfare card charges (`NVN-AL-<bookingId>`) arrive typed `01145` *Travel Booking Fees*. Change them to `TOLLS` (*Airfare, Paid by Corporate Card or You*) or the report shows the `NVNAL` and `TIPTRLHS` exceptions. The Navan trip fee (`NVN  TRP FEE <bookingId>`, two spaces) is a genuine booking fee and **stays `01145`**.
+
+Once typed `TOLLS`, an airfare entry is blocked by `MISSREQFLD` until two fields are set: `ticketNumber` (the airline e-ticket, which for Navan is the flight confirmation such as `KDMDXPL`; `navan expenses` prints it) and `custom15` Class of Service (`{"value":"<listItemId>"}`, Economy is `5E0AC8B576C2D643ADF191F71E320549`). `concur exceptions` lists exactly which fields are empty and prints the `set-fields` command.
+
+`GetAvailableExpenses` and `MoveAvailableExpensesToReport` take `{userId, contextRole, page, size}` and `{userId, contextRole, ids, reportId}`; passing a `params` object makes both fail with HTTP 400, so use the commands instead of hand-building the call.
 
 To flip an existing card transaction to personal/out-of-pocket: `concur set-payment <reportId> <expenseId> CASH`.
 
@@ -125,13 +149,18 @@ These hit the public-API surface at `www-us2.api.concursolutions.com/api/v3.0/*`
 | Command | Description |
 |---|---|
 | `concur new-expense <reportId> --type=<expenseTypeId> --date=YYYY-MM-DD --amount=NN.NN --currency=<ISO> --location=<locationId> [--vendor="..."] [--payment=CASH] [--exchange=<rate>] [--comment="..."] [--personal] [--receipt=<imageId>] [--fields='<json>']` | Create a brand-new (out-of-pocket / cash) expense line via `SaveNewExpenseEntry`/`createExpense`. `policyId` auto-resolves from the report. `--payment=CASH` = Out of Pocket, `PCCD` = Pending Card Transaction. An `exchangeRate` is always sent (defaults to 1.0 for same-currency; pass `--exchange` for a foreign currency, e.g. GBP→EUR `1.1555`). Many policies require extra required fields — pass them via `--fields '<json>'` (e.g. `custom8`/`custom24` list items, `taxRateLocation`, `receiptTypeId`). Note: for non-meal types (e.g. transport `TAXIX`) set `isExpensePartOfTravelAllowance:false` in `--fields`; meals/lodging policies may want it true. Returns the new `expenseId`. |
-| `concur new-report --name="<name>" [--policy=<policyId>] [--purpose=<listItemId>] [--comment="..."]` | Create a new unsubmitted report via `CreateReportHeader`. Cost center, company code and site location default from your profile; `--purpose` sets the Business Purpose (`custom14`) and copies it down, which most policies require before submit. Returns the new `reportId`. |
+| `concur new-report --name="<name>" [--policy=<policyId>] [--purpose=<id\|label\|code>] [--comment="..."]` | Create a new unsubmitted report via `CreateReportHeader`. Cost center, company code and site location default from your profile; `--purpose` sets the Business Purpose (`custom14`) and copies it down, which most policies require before submit. `--purpose` takes a list-item id, a label (case-insensitive exact, or a unique prefix), a code, or the v3 `Custom14.ListItemID` shown by `reports-v3`; it is resolved **before** the report is created, so an unknown purpose fails with the option list and creates nothing. Returns the new `reportId`. |
 | `concur delete-expense <reportId> <expenseId> [<expenseId>…] --confirm` | Delete entries **or itemizations** from an unsubmitted report (`DeleteExpenseEntries`). `--confirm` is a **prerequisite** — without it the command dry-runs and prints what it would remove; `--dry-run` does the same explicitly. Company-card charges are **not** destroyed: they return to Available Expenses and can be moved onto another report. Out-of-pocket entries and itemizations are permanent. |
 | `concur delete-report <reportId> --confirm` | Delete an entire unsubmitted report (`DeleteExpenseReport`). Same `--confirm`/`--dry-run` contract as `delete-expense`, and the dry run lists what is on the report plus which lines would return to Available Expenses. Submitted/approved/paid reports are refused — recall or send back first. |
 | `concur set-payment <reportId> <expenseId> <CASH\|PCCD> [--comment="..."]` | Change an existing entry's payment type via `UpdateExistingExpenseEntry` (e.g. flip Corporate Card → Out of Pocket). `policyId` auto-resolves. |
 | `concur payment-types` | List the payment types available to the report owner (`GetPaymentTypes`). `CASH`="Out of Pocket", `PCCD`="Pending Card Transaction". |
-| `concur attach-receipt <reportId> <expenseId> <localPath>` | Upload a receipt image and attach it to a specific expense entry. Auto-converts HEIC/PNG → JPEG via ImageMagick (downscaled to 2048px max, quality 85). Pass `--no-convert` to skip conversion. (PDF attach needs ghostscript; attach a rendered image if unavailable.) |
-| `concur report-purpose <reportId> <listItemId>` | Set the report header's **Business Purpose** (`custom14`) via `UpdateReportHeader` and copy it down to every line (clears `NOBUSPUR`/`NOBUSLIN`/`BADHEADR`). Get the `listItemId` from `concur list-items <businessPurposeListId>`. |
+| `concur attach-receipt <reportId> <expenseId> <localPath> [--json]` | Upload a receipt image and attach it to a specific expense entry. Auto-converts HEIC/PNG → JPEG via ImageMagick (downscaled to 2048px max, quality 85). Pass `--no-convert` to skip conversion. (PDF attach needs ghostscript; attach a rendered image if unavailable.) Prints `{ok, expenseId, imageId}`; `--json` prints the full upload and attach payload. |
+| `concur report-purpose <reportId> <id\|label\|code>` | Set the report header's **Business Purpose** (`custom14`) via `UpdateReportHeader` and copy it down to every line (clears `NOBUSPUR`/`NOBUSLIN`/`BADHEADR`). Accepts the same id/label/prefix/code/v3-id forms as `new-report --purpose`. |
+| `concur purposes [<reportId>] [--policy=<id>]` | List the Business Purpose choices (`id`, `code`, `label`) from the new-report form (or an existing report's form). Use it to see what `--purpose` accepts. |
+| `concur available [--since=YYYY-MM-DD] [--json]` | List unattached card charges (`GetAvailableExpenses`) as id / date / vendor / amount / currency / type / hasReceipt. The id is what `move` takes (it equals the smartExpenseId). `--json` prints rows as JSON. |
+| `concur move <reportId> <availableExpenseId>…` | Move available card charges onto a report (`MoveAvailableExpensesToReport`). Refuses locked reports; fails with the server errors if `status.success` is false. |
+| `concur set-fields <reportId> <expenseId> --fields='<json>' [--ticket=<no>] [--class=<label>] [--json]` | Set arbitrary entry fields via `UpdateExistingExpenseEntry` (same variables as `set-payment`). `--fields` is merged into the update input, e.g. `{"ticketNumber":"KDMDXPL","custom15":{"value":"<listItemId>"}}`. Airfare shortcuts: `--ticket=KDMDXPL` and `--class=Economy` (the label is resolved from the entry form's Class of Service list). Prints `{ok, expenseId, fields, exceptions}`. |
+| `concur types [--policy=<id>] [--search=text] [--parent=<typeId>]` | List **every** expense type of a policy (`GetExpenseFormExpenseTypes`, ~108 on Adobe's policy), with group headers flagged. `recent-types` only returns recently used types and `itemize types` only itemization types. |
 | `concur itinerary <reportId> <itinerary.json>` | Build & assign a **German Travel Allowance itinerary** (clears `GERTAB`/`NOITIN`) via the legacy Ext.Direct endpoint. `itinerary.json`: `{ "name":"...", "tacKey":"2043", "rows":[ {"departLocation":"Potsdam, GERMANY","departDate":"2026-06-29","departTime":"5:00 AM","arrivalLocation":"San Francisco, California","arrivalDate":"2026-06-29","arrivalTime":"2:00 PM"}, … ] }`. Location keys (`LnKey`) auto-resolve from the location strings; override per-row with `departLnKey`/`arrivalLnKey`. Note: meal expenses on a German-TA report must also be flagged `isExpensePartOfTravelAllowance:true` (via `new-expense --fields` or an entry update) or `GERTAB` persists. |
 | `concur submit <reportId> [--source=WEB] [--approver-validated]` | Two-step submit: runs server validation, then commits. Returns `{validation, commit}` statuses (both should be `COMPLETED`). Before submitting, run `concur exceptions <reportId>` and check `hasBlockingExceptions` — the server validation step catches hard blockers, but reviewing first avoids a wasted round-trip on reports that need edits. All mutation commands (`change-type`, `attach-receipt`, `itemize`, `submit`) also refuse to run against reports that are locked (already Approved/Submitted/Paid) and report the current status instead. |
 
@@ -159,13 +188,15 @@ An itinerary only satisfies the rule — it does **not** create per-diem expense
 
 `concur itemize hotel`/`add` now auto-resolve the required `locationId` and `exchangeRate` from the parent entry's expense form (moved card charges carry a null `location` on the summary, which previously caused a generic `400`). `concur attach-receipt` accepts PDF receipts directly with `--no-convert` (Concur stores PDFs natively; no ghostscript rasterization needed).
 
+`concur change-type` prints `{ok, expenseId, expenseTypeId, expenseType, exceptions}` instead of the whole updated-report payload; pass `--json` for the full response.
+
 ### Escape hatches
 
 | Command | Description |
 |---|---|
 | `concur ops` | List all bundled GraphQL operations. |
 | `concur list-items <listId> [--search=text]` | Resolve a form picklist's items (id, code, value) — e.g. Business Purpose or Class of Service. Runs `GetFormListItems` on the **spend** surface with `{listInformation:{id,…}}` (not `cds`, and the key is `id`, not `listId`). |
-| `concur exceptions <reportId>` | Report status check: lists all validation exceptions (errors/warnings) grouped per entry, with `code`, `isBlocking`, and `message` (e.g. `ITEMREQ` "Itemizations are required", `RECEIPT_REQUIRED` "You must attach a receipt image"). Returns `hasBlockingExceptions` so you can tell if a report can be submitted. |
+| `concur exceptions <reportId>` | Report status check: lists all validation exceptions (errors/warnings) grouped per entry, with `code`, `isBlocking`, and `message` (e.g. `ITEMREQ` "Itemizations are required", `RECEIPT_REQUIRED` "You must attach a receipt image"). Returns `hasBlockingExceptions` so you can tell if a report can be submitted. For an entry with `MISSREQFLD` it also prints `missingRequiredFields` (the empty required fields from the entry form) and a `fixWith` `set-fields` command. |
 | `concur graphql <opName> [<variables-json>] [spend\|cds]` | Run any captured operation verbatim. |
 | `concur tab` | Print the tab handle the skill is using for Concur requests. |
 | `concur help` | Usage + examples. |
@@ -202,7 +233,7 @@ For the few operations on the `cds` surface (e.g. `GetOnScreenHelpData`), pass `
 - **GraphQL operations were captured in batched form.** The web app sometimes sends multiple operations in one POST as a JSON array; this skill always sends a single operation per request, which Concur accepts.
 - **Approved/paid reports expose less.** `concur report <id>` retries without `costObjects` when Concur answers 403 `reports.cannotAccess` (normal once a report is submitted) and adds a `_note` saying so, instead of failing. For full history use `concur report-v3` / `concur entries-v3`.
 - **Report URL:** `https://us2.concursolutions.com/nui/expense/reports/<reportId>`. The plausible-looking `/nui/expense/report/<rptKey>` (singular, rptKey) sends the SPA into a redirect loop that appends the report id until the tab dies.
-- **Mutations are real.** `UpdateExistingExpenseEntry`, `CreateReportHeader`, `MoveAvailableExpensesToReport`, `SaveExpenseAttendees`, `SubmitExpenseReport`, `AttachImage`, `MoveExpense` modify state. They are exposed via `concur graphql <op>` rather than a top-level command, so you can't fire them by accident — but they will work.
+- **Mutations are real.** `UpdateExistingExpenseEntry`, `CreateReportHeader`, `MoveAvailableExpensesToReport`, `SaveExpenseAttendees`, `SubmitExpenseReport`, `AttachImage`, `MoveExpense` modify state. Several are top-level commands (`new-report`, `move`, `set-fields`, `change-type`, `attach-receipt`, `submit`); the rest are reachable via `concur graphql <op>`. They all work.
 
 ## Files
 
