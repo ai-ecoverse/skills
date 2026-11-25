@@ -1,0 +1,21 @@
+{
+  "name": "@ai-ecoverse/workday",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The workday CLI for jsh: the Workday org chart from a signed-in myworkday.com tab (find colleagues, a person's profile, management chain, team and direct reports, any supervisory organization). `pnpm add` it in /opt/user on SLICC 7, or `npm install -g` this folder to put `workday` on PATH.",
+  "bin": {
+    "workday": "scripts/workday.jsh"
+  },
+  "files": [
+    "scripts",
+    "references",
+    "SKILL.md"
+  ],
+  "dependencies": {
+    "@ai-ecoverse/sliccy-browser": "0.1.44"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  }
+}
