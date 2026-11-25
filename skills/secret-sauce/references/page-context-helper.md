@@ -9,7 +9,7 @@ request carries the real origin, real cookies, and a real User-Agent.
 ```js
 // helpers.jsh
 export async function openApp(url) {
-  const { stdout: list } = await exec(`playwright-cli list-tabs`);
+  const { stdout: list } = await exec(`playwright-cli tab-list`);
   const existing = list.split('\n').find(l => l.includes(new URL(url).host));
   if (existing) {
     const m = existing.match(/targetId[: =]+([A-F0-9-]+)/);
