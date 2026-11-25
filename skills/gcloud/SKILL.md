@@ -10,8 +10,9 @@ description: >-
   CLI command offers. Triggers on Google Cloud, GCP, gcloud, bq, BigQuery,
   "run a BigQuery query", "list my GCP projects", Compute Engine, Cloud
   Storage, GCS buckets, Cloud Run, Cloud DNS, IAM, service accounts,
-  service-account keys, "gcloud auth login", "Reauthentication failed",
-  "GCP cost", "cost per SKU", "billing report". Not AWS, not Azure.
+  service-account keys, "gcloud auth login", "gcloud login", "device flow",
+  "verification code", "Reauthentication failed", "GCP cost", "cost per SKU",
+  "billing report". Not AWS, not Azure.
 allowed-tools: bash
 ---
 
@@ -39,27 +40,63 @@ In SLICC, `gcloud auth login` uses the paste-code flow: it prints a Google URL
 whose redirect is `https://sdk.cloud.google.com/authcode.html`, and waits for
 the code that page shows. Don't try the loopback flow: SLICC refuses browser
 automation on `127.0.0.1`, and device-code sign-in isn't available for Cloud
-scopes.
+scopes. Users may call this flow "the device flow": `--no-launch-browser` is
+what they mean.
 
 The prompt blocks, so hold its stdin open with a FIFO and run it in the
 background:
 
 ```bash
-mkfifo /tmp/gcl-in; (sleep 1800 > /tmp/gcl-in &)
-(gcloud auth login [ACCOUNT] --no-launch-browser < /tmp/gcl-in > /tmp/gcl-auth.log 2>&1 &)
-grep -o 'https://accounts.google.com/o/oauth2/auth?[^ ]*' /tmp/gcl-auth.log   # open it in a tab
+rm -f /tmp/gcl-in /tmp/gcl-auth.log; mkfifo /tmp/gcl-in; (sleep 1800 > /tmp/gcl-in &)
+(gcloud auth login [ACCOUNT] --no-launch-browser --brief < /tmp/gcl-in > /tmp/gcl-auth.log 2>&1 &)
+grep -o 'https://accounts.google.com/o/oauth2/auth?[^ ]*' /tmp/gcl-auth.log
 ```
 
-The user signs in and pastes the code from the authcode page into the chat.
-Write it to the FIFO, then check the result:
+Show the user the URL before anything else, in this order:
+
+1. Open the URL in a tab (`playwright-cli open "$URL"`) **and** paste it into
+   the chat. `playwright-cli tab-select` doesn't bring a tab to the front, so
+   the chat link is how the user gets there.
+2. Wait until the user says they have the code.
+3. Only then collect it. Either the user pastes it into the chat, or you open
+   the vault dialog in the foreground and pass its answer on:
+
+   ```bash
+   (umask 077; sealed ask GCLOUD_AUTH_CODE --reveal --prompt "Paste the Google verification code" > /tmp/gcl-code) \
+     && cat /tmp/gcl-code > /tmp/gcl-in; rm -f /tmp/gcl-code
+   ```
+
+   Never open the dialog while the user still needs the URL. It overlays the
+   whole window, including the chat, so the link can't be clicked.
+
+Write a code pasted into the chat to the FIFO, then check the result:
 
 ```bash
 printf '%s\n' "$CODE" > /tmp/gcl-in; grep -E 'logged in|ERROR' /tmp/gcl-auth.log
+gcloud auth list
 gcloud config set project PROJECT_ID
 ```
 
 Then stop the `sleep` and remove the FIFO and the log. Several accounts can be
 signed in at once (`gcloud auth list`, `gcloud config set account …`).
+
+Pitfalls:
+
+- **A code only works for the process that printed its URL.** Each run has its
+  own `state` and PKCE `code_challenge`, and only that process holds the
+  matching verifier, so a code from an earlier URL is useless even when fresh. If the user pastes a code after that process has ended,
+  start a new login and give them the new URL.
+- **A page reload kills the waiting `gcloud`.** Background processes don't
+  survive a SLICC reload. If one happens between URL and code, check with
+  `pgrep -f 'auth login'` (or the log has no result line), then start over.
+- **Don't pipe `sealed ask` into `gcloud` from a background job.**
+  `(sealed ask … --reveal | gcloud auth login --no-launch-browser) &` ended with
+  `gcloud crashed (EOFError): EOF when reading a line` before the user had
+  answered. Run `sealed ask` in the foreground and hand its answer to the FIFO, as in
+  step 3.
+- **`EIO` retries during install are normal.** `WASM HTTP host operation
+  failed: EIO` warnings with "Will retry" appear on the large tarballs. pnpm
+  resumes them; don't restart the install.
 
 Credentials stay in `~/.config/gcloud/`. Google Workspace reauthentication
 policies (Adobe's among them) expire a user login within about a day; `bq` then
