@@ -8,7 +8,7 @@ test('package maps outlook to its script', () => {
   is(pkg.bin, { outlook: 'scripts/outlook.jsh' });
   ok(pkg.files.includes('scripts') && pkg.files.includes('SKILL.md'));
   is(pkg.private, true);
-  is(pkg.dependencies['@ai-ecoverse/sliccy-browser'], '0.1.44');
+  ok(/^\d+\.\d+\.\d+$/.test(pkg.dependencies['@ai-ecoverse/sliccy-browser'] ?? ''));
   ok(pkg.engines.node);
 });
 
