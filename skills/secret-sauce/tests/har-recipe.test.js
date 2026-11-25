@@ -44,7 +44,11 @@ test('the SLICC 7 holder keeps stdin open and is stopped in the same session', (
       seven
     )
   );
-  ok(seven.includes('--content embed "$d/capture.har"'));
+  ok(
+    /run `d=\$\(mktemp -d\)` again[^`]*`\$d`\), then hold `har-start [^`]*--content embed "\$d\/capture\.har"`/.test(
+      seven
+    )
+  );
   is((SKILL + FILTER_DOC).match(/\/tmp\//g), null);
   ok(seven.includes('playwright-cli -s capture stop-recording'));
   ok(seven.includes('/recordings/<recordingId>/recording.har'));
