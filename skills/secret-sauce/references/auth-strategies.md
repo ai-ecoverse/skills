@@ -4,7 +4,7 @@ Pick the row that matches the API you discovered in Phase 1.
 
 | Auth type              | How to detect                                                                 | Where the credential lives                         | How to call the API                                                                  |
 |------------------------|-------------------------------------------------------------------------------|----------------------------------------------------|--------------------------------------------------------------------------------------|
-| **PAT / API key**      | Public docs mention "personal access token" or `X-API-Key` header            | Ask user, store in `/workspace/skills/{app}/.config` | `fetch()` with `Authorization: Bearer <PAT>` or the documented header                |
+| **PAT / API key**      | Public docs mention "personal access token" or `X-API-Key` header            | Ask user: `sealed ask NAME` in SLICC, else `skill.config()` | `fetch()` with `Authorization: Bearer <PAT>` or the documented header                |
 | **Bearer / JWT**       | `Authorization: Bearer ey…` in HAR; token in `localStorage`/`sessionStorage` | `localStorage.access_token` / `id_token`           | `fetch()` with the JWT in `Authorization`                                            |
 | **Cookie session**     | No `Authorization` header in HAR; `Set-Cookie` on login                      | Browser cookie jar                                 | `playwright-cli eval` from the page (cookies attach automatically)                   |
 | **Origin-validated**   | `fetch()` from Node → 401/403; same call from page works                     | n/a (server checks `Origin` header)                | `playwright-cli eval` from the page so the real origin is sent                       |
@@ -20,11 +20,9 @@ Pick the row that matches the API you discovered in Phase 1.
 
 ## Storing credentials
 
-```
-/workspace/skills/{app-name}/.config        # one KEY=value per line, gitignored
-```
+In SLICC, ask for a secret with `sealed ask NAME`: the user types it in a dialog, the script sees only a placeholder in `$NAME`, and the vault puts the real value into the request header for the domains its rule allows. Nothing reaches the chat or the disk.
 
-Read them from `.jsh` via `process.env` after sourcing, or via `exec('cat .config')`.
+Otherwise keep it in the skill's config: `await skill.config({ token })` writes `.config` next to the skill (gitignored), and `(await skill.config()) || {}` reads it back. Don't `cat` it: whatever a command prints is kept in the transcript.
 
 ## Bot detection notes
 

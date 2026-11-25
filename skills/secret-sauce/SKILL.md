@@ -31,7 +31,7 @@ Generated `.jsh` scripts are JavaScript with a CommonJS `require()`. Reach for a
 
 `require()` resolves in this order: `sliccy:*` capability bridges → served Node built-ins → `node_modules` on disk.
 
-**1. `sliccy:*` — always available, zero install. Prefer these over any npm equivalent.**
+**1. `sliccy:*` — prefer these over any npm equivalent.** jsh builds in `cli`, `color`, `exec`, `fmt`, `http`, `pool`, `skill` and `time`. `browser` is the package `@ai-ecoverse/sliccy-browser` (a `dependencies` entry, see [Package](#package)); `agent`, `usb`, `serial` and `hid` exist only inside SLICC.
 
 | Need | Use | Not |
 | --- | --- | --- |
@@ -48,21 +48,15 @@ Generated `.jsh` scripts are JavaScript with a CommonJS `require()`. Reach for a
 
 The full set: `exec`, `agent`, `skill`, `http`, `browser`, `cli`, `color`, `time`, `fmt`, `pool`, `usb`, `serial`, `hid`. An unknown name throws and lists the known ones.
 
-**2. Node built-ins** — `require('fs')`, `fs/promises`, `path`, `crypto`, `child_process`, `buffer`, `assert`, `util`, `events`, `os`, `stream`, `url`, `zlib`. `fs` is the VFS bridge (`readFile`, `writeFile`, `readFileBinary`, `writeFileBinary`, `readDir`, `exists`, `stat`, `mkdir`, `rm`, `fetchToFile`) — no `watch`, no streams, sync reads capped at 1 MB. `http`/`https`/`net`/`tls`/`dns`/`vm`/`worker_threads` throw; use `fetch()` or `sliccy:browser`.
+**2. Node built-ins** — `require('fs')`, `fs/promises`, `path`, `crypto`, `child_process`, `buffer`, `assert`, `util`, `events`, `os`, `stream`, `url`, `zlib`, and on SLICC 7 also `http`, `https`, `net`, `vm` and `worker_threads`. Prefer `fetch()` or `sliccy:browser` for HTTP anyway. Use Node's own `fs` API (`fs.promises.readFile(p, 'utf8')`, `writeFile`, `mkdir(p, { recursive: true })`, `readdir`, `stat`): SLICC 6's VFS helpers (`readFileBinary`, `writeFileBinary`, `readDir`, `fetchToFile`) don't exist on SLICC 7. See the repo's `CLAUDE.md` §2 for the dual-runtime rules.
 
-**3. npm packages — only if installed, and there is no CDN fallback.** A bare `require('some-pkg')` resolves by walking `node_modules` upward from the *script's own directory*. Nothing is bundled and nothing is fetched from a CDN: an uninstalled package fails immediately with `Cannot find module 'x' (run: ipk install x)`.
-
-```bash
-cd /workspace/skills/{app-name}/scripts
-ipk install some-pkg           # writes node_modules/ + package.json
-ipk add esbuild-wasm           # only if the package is ESM and needs transpiling
-```
+**3. npm packages — only if installed, and there is no CDN fallback.** A bare `require('some-pkg')` resolves from `node_modules`. Nothing is fetched from a CDN: an uninstalled package fails with `Cannot find module 'x'`. On SLICC 7 a skill is an npm package (see [Package](#package)), so a dependency goes in its `package.json` `dependencies` and `pnpm` installs it with the skill. `sliccy:browser` is such a dependency: it is not built into jsh, so a skill that uses it lists `@ai-ecoverse/sliccy-browser`. (SLICC 6 installed packages with `ipk install`.)
 
 `node_modules/` is gitignored, so an installed tree does **not** travel with the skill. A generated skill that needs a package must therefore pick one of:
 
 - **Drop the dependency** — the default. Check the `sliccy:` table above first; it covers almost every reason a generated client reaches for npm.
 - **Bundle it** — `esbuild <src>.js --bundle --format=cjs --target=node18 --outfile=<name>.jsh` and commit the single generated file (the `xlsx` skill is the reference).
-- **Document a one-time install** — put the exact `ipk install` line in the generated `SKILL.md` and make the script fail with an actionable error naming that command (the `v86` skill is the reference).
+- **Declare it** — list it in the skill's `package.json` `dependencies`, so installing the skill installs it.
 
 Native packages (`sharp`, `sqlite3`, `puppeteer`, `canvas`, …) hard-throw — they can never work here. Prefer a `sliccy:` bridge over any dependency: a purpose-built bridge has beaten a generic npm utility every time it came up in review.
 
@@ -72,16 +66,13 @@ Native packages (`sharp`, `sqlite3`, `puppeteer`, `canvas`, …) hard-throw — 
 
 ### Dry-run validation
 
-**Token-based APIs:**
+**Token-based APIs:** find where the token lives by key name, then use it inside the page, so its value never reaches the transcript:
 ```bash
-playwright-cli localstorage-list          # find JWTs/tokens
-playwright-cli cookie-get auth_token      # or from cookies
-node -e "(async () => {
-  const r = await fetch('https://api.example.com/v1/me', {
-    headers: { 'Authorization': 'Bearer TOKEN_HERE' }
-  });
-  console.log('Status:', r.status);
-  if (r.ok) console.log(await r.json());
+playwright-cli localstorage-list | cut -d= -f1    # key names only: access_token, id_token, jwt
+playwright-cli eval --tab <id> "(async () => {
+  const t = localStorage.getItem('access_token');
+  const r = await fetch('https://api.example.com/v1/me', { headers: { Authorization: 'Bearer ' + t } });
+  return r.status;
 })()"
 ```
 
@@ -96,7 +87,19 @@ playwright-cli eval --tab=$tabId "
 "
 ```
 
+`curlwright --tab <id> <url>` does the same with curl's arguments (`-X POST`, `--data`, `-H`, `-o`, `-w '%{http_code}'`) and is easier to iterate with than an `eval` string. Check the body, not only the status: some backends answer errors with **200** and an XML or HTML body (Workday does).
+
 If 200 → move to Phase 4. If 401/403 → dig into auth. If 404 → HAR capture.
+
+### Which requests does the page make?
+
+Before recording, list what the tab already fetched. It costs one call and needs no recording:
+
+```bash
+playwright-cli eval --tab <id> "JSON.stringify(performance.getEntriesByType('resource').filter(e => /fetch|xmlhttp/.test(e.initiatorType)).map(e => e.name))"
+```
+
+That gives URLs, not methods or bodies. Fetch a GET one with `curlwright` to see its body. For a POST, find the request builder in the app's own JS: fetch the bundle in the page and search it for the path or a field name from a response.
 
 ### HAR capture
 
@@ -132,6 +135,8 @@ playwright-cli record https://app.example.com --filter="(e) => { if (!e.response
 
 The full annotated filter (drops static assets and analytics, keeps JSON/form/API-path responses, documents the header-shape pitfall) is in `references/har-filter.md`, with the SLICC 7 globs that come closest to it. Six writes bodies by default and one chunk per navigation. After the first navigation, verify `/recordings/<recordingId>/` contains a non-empty `001-…-navigation-….har`. Empty dir = broken filter; fall back to unfiltered `playwright-cli record <url>` and filter offline.
 
+**An empty HAR is not proof that there is no API.** On some apps (seen on Workday, 2026-11-25, SLICC 7) a recording, filtered or not, held only static assets: no XHR/fetch entries and no bodies with `--content embed`, while `performance.getEntriesByType('resource')` in the same tab listed dozens of API calls. Compare the entry count with that list before you conclude anything, and fall back to resource timings plus `curlwright`.
+
 Tell the user to perform the actions they want to automate, then:
 ```bash
 playwright-cli stop-recording <recordingId>
@@ -145,19 +150,21 @@ Check cookie domain scoping — a session cookie on `example.com` won't be sent 
 
 ## Phase 2: Authentication
 
-### Extract credentials
+### Find where the credentials live
+
+Prefer not to read credentials at all: a request from the page (`sliccy:browser` `fetch`, `curlwright`) already carries the cookies. When a header token is needed, find out *where* it lives, by key names only, and let the shipped script read and use it inside the page (`evalAsync`), so it never reaches the transcript. Everything a command prints is kept.
 
 ```bash
-playwright-cli localstorage-list    # SPAs: access_token, id_token, jwt
-playwright-cli cookie-list          # server-rendered: session cookies, CSRF tokens
-playwright-cli sessionstorage-list
+playwright-cli localstorage-list | cut -d= -f1    # key names only: access_token, id_token, jwt
+playwright-cli cookie-list | cut -d= -f1          # names only: session cookies, CSRF tokens
+playwright-cli sessionstorage-list | cut -d= -f1
 ```
 
 ### Auth strategy
 
 See `references/auth-strategies.md` for the full auth strategy table covering PAT/API key, Bearer/JWT, cookie-based session, Origin-validated API, CSRF token, and OAuth flows.
 
-If session auth is impractical (cookies scoped to a different domain, locked-down GraphQL), ask the user to create a PAT in the app's settings. Store it at `/workspace/skills/{app-name}/.config`.
+If session auth is impractical (cookies scoped to a different domain, locked-down GraphQL), ask the user to create a PAT in the app's settings. Keep it out of the chat and off disk where you can: in SLICC ask for it with `sealed ask NAME`, so the vault fills it into the request header; otherwise `skill.config()` (gitignored `.config` next to the skill).
 
 ### Page-context fetch helper
 
@@ -195,8 +202,9 @@ skills/{app-name}/
 │   ├── {app-name}.jsh               # Main API client
 │   ├── auth.jsh                     # Auth helpers (if needed)
 │   ├── watch.jsh                    # Observer/webhook setup (if applicable)
-│   └── package.json                 # ONLY if an npm dependency was unavoidable
-│                                    # (node_modules/ is gitignored — see Modules)
+│   └── lib/{app-name}.js            # Pure parsers, required by the .jsh, tested alone
+├── package.json                     # bin: one entry per command (see Package)
+├── tests/                           # tst suites: *.test.js (see Package)
 ├── references/
 │   ├── endpoints.md                 # Discovered API endpoints
 │   ├── auth-strategies.md           # Auth strategy table
@@ -212,9 +220,10 @@ skills/{app-name}/
 
 ### .jsh script structure
 
-The filename without `.jsh` becomes the shell command name. Start from this template — it is the house style, and every utility it needs comes from `require()` rather than a local helper (see [Modules](#modules-never-hand-roll-what-require-already-gives-you)).
+On SLICC 7 a command is a `bin` entry of the skill's `package.json` (see [Package](#package)), and its file starts with `#!/usr/bin/env jsh`. (SLICC 6 made every `*.jsh` a command named after its basename.) Start from this template — it is the house style, and every utility it needs comes from `require()` rather than a local helper (see [Modules](#modules-never-hand-roll-what-require-already-gives-you)).
 
 ```js
+#!/usr/bin/env jsh
 // {app-name}.jsh — API client for {App Name} (uses the browser session)
 const browser = require('sliccy:browser');
 const cli = require('sliccy:cli');
@@ -306,6 +315,31 @@ Notes that survive review:
 - Resolve the current user/account dynamically and `die` loudly if that fails. Never ship a hardcoded ID as a fallback identity.
 - For a token-based API, swap `browser.fetch` for `http.client({baseUrl, token, retry: {on: [429, 503], maxAttempts: 3}})` from `sliccy:http` — it honours `Retry-After` and throws `HttpError{status, url, body}`, so no hand-rolled retry loop is needed.
 
+### Package
+
+A skill with commands is an npm package. `skills/{app-name}/package.json`:
+
+```json
+{
+  "name": "@ai-ecoverse/{app-name}",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The {app-name} CLI for jsh: … `pnpm add` it in /opt/user on SLICC 7, or `npm install -g` this folder to put `{app-name}` on PATH.",
+  "bin": { "{app-name}": "scripts/{app-name}.jsh" },
+  "files": ["scripts", "references", "SKILL.md"],
+  "dependencies": { "@ai-ecoverse/sliccy-browser": "<pinned version>" },
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22" }
+}
+```
+
+- Every `bin` target is executable in git (`git update-index --chmod=+x`), starts with `#!/usr/bin/env jsh` and is under `files`.
+- Every `sliccy:<name>` other than jsh's own (`cli`, `color`, `exec`, `fmt`, `http`, `pool`, `skill`, `time`) is a dependency, `@ai-ecoverse/sliccy-<name>`. Copy the pinned version from a sibling skill.
+- Tests are `tests/*.test.js` that `import test, { is, ok } from 'tst'`, not `node:test`. Keep the parsing in `scripts/lib/*.js` so tests feed it fixtures, and run the `.jsh` itself with stubbed `require` modules (`skills/apple-developer/tests/cli.test.js` is the pattern).
+- Check the install the way seven does it: `npm pack`, then `pnpm add <tarball>` in an empty folder, then `node_modules/.bin/{app-name} --help`.
+
+The repo's `CLAUDE.md` §16 has the CI rules these satisfy.
+
 ### Generated SKILL.md frontmatter
 
 ```yaml
@@ -327,10 +361,12 @@ Include the app name multiple times and list common action triggers to maximise 
 1. Auth works — run a read-only API call via the .jsh script
 2. Every subcommand works
 3. 401 triggers re-auth message; 429 shows rate-limit info
-4. The .jsh is callable as a shell command (filename without .jsh = command)
+4. The command installs and runs from the package: `npm pack`, `pnpm add <tarball>`, then `<app-name> --help` exits 0
 5. The SKILL.md description includes the app name and common action words
 6. No hand-rolled helper duplicates a module — grep the script for a local arg parser, `shellQuote`, colour escapes, a retry loop, or a table formatter and replace each with its `require()` equivalent
-7. Every `require()` specifier is a string literal, and every bare npm package actually resolves (run the script once; an uninstalled one fails with `Cannot find module … (run: ipk install …)`)
+7. Every `require()` specifier is a string literal, and every bare npm package actually resolves (run the script once; an uninstalled one fails with `Cannot find module …`)
+8. No identity, tenant or account ID is a constant: resolve it from the session and die when that fails. Prove it with a test that changes the fixture's user or tenant
+9. Error paths are tested against the real failure shape the app returns (an expired session, an error body with HTTP 200), and each such test goes red when its check is removed
 
 ## Decision tree
 
