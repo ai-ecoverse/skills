@@ -109,9 +109,9 @@ playwright-cli --version   # SLICC 7 prints "playwright-cli 1.41.0" (or newer); 
 **SLICC 7** (slicc-cdp >= 1.41.0): `--filter` is a URL glob. A filter containing `=>`, `function` or `;` is refused. `record` is a foreground holder that runs until its stdin closes or `stop-recording` runs in the same session, so give it a stdin that stays open and run it in the background:
 
 ```bash
-: > /tmp/har-events.jsonl
-(sleep 1800 | playwright-cli -s capture record https://app.example.com --filter='**/api/**' --content embed > /tmp/har-events.jsonl 2>&1 &)
-for i in $(seq 30); do [ -s /tmp/har-events.jsonl ] && break; sleep 1; done; head -1 /tmp/har-events.jsonl   # {"event":"ready","recordingId":"rec-…","path":"/recordings/rec-…/recording.har","tab":"…"}
+d=$(mktemp -d)
+(sleep 1800 | playwright-cli -s capture record https://app.example.com --filter='**/api/**' --content embed > "$d/har-events.jsonl" 2>&1 &)
+for i in $(seq 30); do [ -s "$d/har-events.jsonl" ] && break; sleep 1; done; head -1 "$d/har-events.jsonl"   # {"event":"ready","recordingId":"rec-…","path":"/recordings/rec-…/recording.har","tab":"…"}
 ```
 
 The user browses in the new tab. When they are done, stop it from the same session:
@@ -120,7 +120,7 @@ The user browses in the new tab. When they are done, stop it from the same sessi
 playwright-cli -s capture stop-recording   # prints the "stopped" event with path and entry count
 ```
 
-The HAR is one cumulative file, `/recordings/<recordingId>/recording.har`, rewritten on each main-frame navigation and on stop. Add `--content embed` when you need bodies for schemas; without it bodies are omitted. A body is kept only while the page that requested it is still the current document. Cookie, Set-Cookie and Authorization headers are stripped unless you add `--include-credentials`; that HAR then holds live credentials, so never print it, and delete it when you are done. Use globs such as `'**/api/**'`, `'**/graphql*'` or `'https://api.example.com/**'`, or no filter at all and filter offline. If `record` fails with `Read-only file system` (no `/recordings`), `playwright-cli -s capture open about:blank`, then hold `har-start --tab <targetId> --url-filter '<glob>' --content embed /tmp/capture.har` the same way and `playwright-cli -s capture goto <url> --tab <targetId>`.
+The HAR is one cumulative file, `/recordings/<recordingId>/recording.har`, rewritten on each main-frame navigation and on stop. Add `--content embed` when you need bodies for schemas; without it bodies are omitted. A body is kept only while the page that requested it is still the current document. Cookie, Set-Cookie and Authorization headers are stripped unless you add `--include-credentials`; that HAR then holds live credentials, so never print it, and delete it when you are done. Use globs such as `'**/api/**'`, `'**/graphql*'` or `'https://api.example.com/**'`, or no filter at all and filter offline. If `record` fails with `Read-only file system` (no `/recordings`), `playwright-cli -s capture open about:blank`, then hold `har-start --tab <targetId> --url-filter '<glob>' --content embed "$d/capture.har"` the same way and `playwright-cli -s capture goto <url> --tab <targetId>`.
 
 **SLICC 6**: `--filter` is a JavaScript predicate, and `record` returns at once with `Recording started (targetId: …, recordingId: rec-…)`:
 
