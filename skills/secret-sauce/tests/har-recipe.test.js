@@ -36,8 +36,20 @@ test('every SLICC 7 record filter in SKILL.md is a URL glob seven accepts', () =
 
 test('the SLICC 7 holder keeps stdin open and is stopped in the same session', () => {
   const seven = section(SKILL, '**SLICC 7**', '**SLICC 6**');
-  ok(/: > \/tmp\/har-events\.jsonl\n\(sleep \d+ \| playwright-cli -s capture record /.test(seven));
-  ok(/do \[ -s \/tmp\/har-events\.jsonl \] && break; sleep 1; done; head -1/.test(seven));
+  ok(/^d=\$\(mktemp -d\)\n\(sleep \d+ \| playwright-cli -s capture record /m.test(seven));
+  is(seven.match(/"\$d\/har-events\.jsonl"/g)?.length, 3);
+  ok(/> "\$d\/har-events\.jsonl" 2>&1 &\)/.test(seven));
+  ok(
+    /do \[ -s "\$d\/har-events\.jsonl" \] && break; sleep 1; done; head -1 "\$d\/har-events\.jsonl"/.test(
+      seven
+    )
+  );
+  ok(
+    /run `d=\$\(mktemp -d\)` again[^`]*`\$d`\), then hold `har-start [^`]*--content embed "\$d\/capture\.har"`/.test(
+      seven
+    )
+  );
+  is((SKILL + FILTER_DOC).match(/\/tmp\//g), null);
   ok(seven.includes('playwright-cli -s capture stop-recording'));
   ok(seven.includes('/recordings/<recordingId>/recording.har'));
   ok(seven.includes('--include-credentials'));
