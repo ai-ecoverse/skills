@@ -113,3 +113,85 @@ test('chainOf lists managers nearest first, without the person and without repea
   is(wd.chainOf('247$1001', team, self).map((m) => m.name), ['Charles Babbage', 'Grace Hopper']);
   is(wd.chainOf('247$7', team, self).map((m) => m.name), ['Grace Hopper']);
 });
+
+test('isRateLimited matches only the "Too many repeating requests" message', () => {
+  ok(wd.isRateLimited(F.TOO_MANY));
+  ok(!wd.isRateLimited(F.SERVER_ERROR));
+  ok(!wd.isRateLimited(F.MISSING_PARM));
+  ok(!wd.isRateLimited(F.SIGN_IN_PAGE));
+  ok(!wd.isRateLimited('{"widget":"root"}'));
+  ok(!wd.isRateLimited({ widget: 'root' }));
+});
+
+test('parseDuration reads ms, s, m, h, d and plain seconds', () => {
+  is(wd.parseDuration('500ms'), 500);
+  is(wd.parseDuration('15s'), 15000);
+  is(wd.parseDuration('90'), 90000);
+  is(wd.parseDuration('15m'), 900000);
+  is(wd.parseDuration('1h'), 3600000);
+  is(wd.parseDuration('2d'), 172800000);
+  is(wd.parseDuration('0'), 0);
+  is(wd.parseDuration('1.5h'), 5400000);
+  is(wd.parseDuration('soon'), null);
+  is(wd.parseDuration('-1h'), null);
+  is(wd.parseDuration(''), null);
+  is(wd.parseDuration(true), null);
+});
+
+test('entryFresh: within the age, not older, not from the future, not malformed', () => {
+  is(wd.entryFresh({ at: 1000, value: 1 }, 1500, 600), true);
+  is(wd.entryFresh({ at: 1000, value: 1 }, 1700, 600), false);
+  is(wd.entryFresh({ at: 2000, value: 1 }, 1500, 600), false);
+  is(wd.entryFresh({ at: 1000 }, 1500, 600), false);
+  is(wd.entryFresh(null, 1500, 600), false);
+  is(wd.entryFresh({ at: 'x', value: 1 }, 1500, 600), false);
+});
+
+test('cacheFileName separates host and tenant and stays a plain file name', () => {
+  is(wd.cacheFileName('https://wd3.myworkday.com', 'acme'), 'wd3.myworkday.com_acme.json');
+  ok(wd.cacheFileName('https://wd3.myworkday.com', 'acme') !== wd.cacheFileName('https://wd4.myworkday.com', 'acme'));
+  ok(wd.cacheFileName('https://wd3.myworkday.com', 'acme') !== wd.cacheFileName('https://wd3.myworkday.com', 'beta'));
+  ok(!wd.cacheFileName('https://wd3.myworkday.com', '../x').includes('/'));
+});
+
+test('parseLookupInput: lines, blank lines, JSON arrays, and what it refuses', () => {
+  is(wd.parseLookupInput('Ada  Lovelace\n\n  Alan Turing \r\n', false).items.map((i) => i.name), ['Ada Lovelace', 'Alan Turing']);
+  const j = wd.parseLookupInput('[{"name":"Ada","x":1}]', true);
+  is(j.items[0], { name: 'Ada', source: { name: 'Ada', x: 1 } });
+  ok(wd.parseLookupInput('{"name":"Ada"}', true).error);
+  ok(wd.parseLookupInput('[{"nom":"Ada"}]', true).error);
+  ok(wd.parseLookupInput('["Ada"]', true).error);
+  ok(wd.parseLookupInput('nope', true).error);
+});
+
+test('lookupResult: found, ambiguous, not found, no profile', () => {
+  const people = wd.searchPeople(F.SEARCH);
+  const prof = wd.parseProfile(F.PROFILE_ADA);
+  is(wd.lookupResult('Ada Lovelace', people, prof).status, 'found');
+  is(wd.lookupResult('ada lovelace', people, prof).manager, 'Charles Babbage');
+  is(wd.lookupResult('Ada', people, null).status, 'ambiguous');
+  is(wd.lookupResult('Zed', [], null), { status: 'not-found', candidates: [] });
+  is(wd.lookupResult('Ada Lovelace', people, null).status, 'no-profile');
+});
+
+test('walkTree: every member of every org once, with groups, and --depth', async () => {
+  const org = (id, name, owner, children, extra = {}) => ({ self: { id, name, owners: [owner], title: 'Head', location: 'X' }, children, total: children.length, ...extra });
+  const p = (id, name) => ({ kind: 'person', id, name, title: 't', location: 'l', owners: [] });
+  const o = (id, name, owner) => ({ kind: 'org', id, name, title: 'Dir', location: 'l', owners: [owner] });
+  const orgs = {
+    R: org('R', 'Root', { id: 'r', name: 'Rita' }, [o('A', 'A', { id: 'a', name: 'Al' }), p('p1', 'P1')]),
+    A: org('A', 'A', { id: 'a', name: 'Al' }, [p('p2', 'P2'), p('p1', 'P1'), o('B', 'B', { id: 'b', name: 'Bo' })]),
+    B: org('B', 'B', { id: 'b', name: 'Bo' }, [p('p3', 'P3'), o('R', 'Root', { id: 'r', name: 'Rita' })]),
+  };
+  const seen = [];
+  const load = async (id) => (seen.push(id), orgs[id]);
+  const t = await wd.walkTree('R', load, {});
+  is(seen, ['R', 'A', 'B']);
+  is(t.people.map((x) => x.id), ['r', 'a', 'p1', 'p2', 'b', 'p3']);
+  is(t.people.map((x) => x.group), [null, 'Al', 'P1', 'Al', 'Al', 'Al']);
+  is(t.people.map((x) => x.depth), [0, 1, 1, 2, 2, 3]);
+  const shallow = await wd.walkTree('R', load, { maxDepth: 1 });
+  is(shallow.people.map((x) => x.id), ['r', 'a', 'p1']);
+  orgs.A.incomplete = true;
+  is((await wd.walkTree('R', load, {})).warnings.length, 1);
+});

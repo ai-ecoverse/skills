@@ -2,8 +2,9 @@
 name: workday
 description: Workday org chart and people directory from the browser session — find
   colleagues by name, look up a person's title, email, location and manager, show
-  someone's management chain, team and direct reports, and list the members of any
-  supervisory organization. Use when the user asks who someone reports to, who is on a
+  someone's management chain, team and direct reports, list the members of any
+  supervisory organization, resolve a list of names to ids in bulk (lookup), and walk a
+  whole org below a manager (tree), with a per-tenant cache. Use when the user asks who someone reports to, who is on a
   team, who their colleagues or peers are, who leads an org, what someone's job title
   or email is, or wants to explore the Workday org chart without clicking through
   myworkday.com. Triggers on Workday, myworkday.com, org chart, organization chart,
@@ -30,6 +31,10 @@ workday orgchart                     # your management chain, team and direct re
 workday orgchart "Grace Hopper"      # a manager: their chain, peers and reports
 workday orgchart '247$1001' --chain 1
 workday org '2500$2001'              # one supervisory organization and its members
+printf 'Ada Lovelace\nAlan Turing\n' | workday lookup   # names → id, title, org, location, manager
+workday tree "Charles Babbage"       # everyone below a manager, with their top-level group
+workday tree '2500$2001' --depth 2 --json
+workday cache                        # entries, size and path of the cache
 ```
 
 Every listing prints `id:…` so that the next call can take an id instead of a name.
@@ -49,8 +54,35 @@ A name that matches several people stops with the candidates and their ids
 | `orgchart [<name\|id>]` | Management chain (nearest first), the team the person is on with the person marked `▸`, and their direct reports. A manager's peers are the other leads in their parent org |
 | `org <2500$id>` | Owner, parent org and every member of one org; members that lead a team show its size |
 
+| `lookup` | Bulk resolver. Names on stdin, one per line (or with `--json` an array of objects with a `name`; other fields pass through, the answer is added as `workday`). Per name: `status` (`found`, `ambiguous`, `not-found`, `no-profile`), id, title, org, location, manager. An exact full-name match wins; an ambiguous or missing name gets a status and never stops the run |
+| `tree <name\|247$id\|2500$id>` | Every person below a person (the team they lead) or in an org, breadth-first, each once: id, name, title, location, `group` (the root's direct report whose sub-org holds them; a direct report heads their own group; the root's owner has none) and `depth`. Pages every org past its first page. `--depth N` expands N levels |
+| `cache [info]`, `cache clear` | Entry count, size and path of the cache; empty it |
+
 Flags: `--json` on every command prints the parsed data. `--chain N` caps the
-management chain of `orgchart`.
+management chain of `orgchart`. `--depth N` limits `tree`. Put flags after the
+names; a flag can take the next word as its value.
+
+## Cache and rate limit
+
+Search results, worker profiles, team pages and the assembled member list of each
+org are cached, one file per tenant: `~/.cache/workday/<host>_<tenant>.json`
+(`$WORKDAY_CACHE_DIR` replaces the directory). Entries expire after 24 hours.
+
+- `--max-age 1h` (also `90s`, `15m`, `2d`) changes how old an entry may be.
+- `--fresh` ignores the cache for reading and refreshes it.
+- `workday cache` shows entries, size and path; `workday cache clear` deletes the
+  cache files of every tenant. `rm -r ~/.cache/workday` does the same.
+
+Only parsed answers are stored: no cookies, tokens or headers, and never an error,
+an XML error body, a sign-in page or a 401/403. The org chart's chunk URLs are
+server-side cursors that go stale, so they are not stored; the finished member
+list of the org is.
+
+Workday limits bursts by answering HTTP 200 with "Too many repeating requests".
+`workday` waits 15 s, then 30 s, then 60 s (`--retry-wait 5s` changes the first
+wait) and tries at most 4 times, then stops with a message; what it already
+fetched stays cached, so a rerun carries on. `lookup` and `tree` also wait
+`--gap` (default 1 s) between requests; cached answers cost neither.
 
 For a manager, Workday's *View Team* opens the team they lead, so `orgchart`
 lists that team as direct reports and loads the parent org as their own team.

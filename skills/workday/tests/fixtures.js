@@ -207,3 +207,39 @@ export function navigator(parent, self, children, { count, chunk } = {}) {
 export const MISSING_PARM =
   '<?xml version="1.0" encoding="UTF-8"?><wml:System_Error xmlns:wml="http://www.workday.com/ns/model/1.0" Type="com.workday.ui.appservice.oms.OmsRemoteException"><wml:Message>Missing Required Parm: Navigable_Task--IS (15$35098)</wml:Message></wml:System_Error>';
 export const SIGN_IN_PAGE = '\n\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"><html><body>Sign In</body></html>';
+
+export const TOO_MANY =
+  '<?xml version="1.0" encoding="UTF-8"?><wml:Application_Error xmlns:wml="http://www.workday.com/ns/model/1.0" Type="Validation"><wml:Message>Too many repeating requests. Please try again later.</wml:Message></wml:Application_Error>';
+export const SERVER_ERROR =
+  '<?xml version="1.0" encoding="UTF-8"?><wml:Application_Error xmlns:wml="http://www.workday.com/ns/model/1.0" Type="Server Error"><wml:Message>There was an error processing your request.</wml:Message></wml:Application_Error>';
+
+// A person card with a generated id: person(5) is 247$5005.
+export const person = (n, extra = {}) =>
+  detail(`247$${5000 + n}`, `Person ${n}`, { title: `Role ${n}`, location: n % 2 ? 'Berlin' : 'Paris', leaf: true, ...extra });
+
+const chunk = (details, totalCount) => ({ widget: 'navigatorDetailsChunk', totalCount, navigatorDetails: details });
+const range = (from, to) => Array.from({ length: to - from }, (_, i) => person(from + i));
+
+// Orgs for the tree tests, under the tenant `acme`:
+//   2500$4000 Research (Barbara Liskov, 247$20): 120 members, 50 per page.
+//     First page: orgs A and B and leaves 1-48. Chunks: leaves 49-98, 99-118.
+//   2500$4001 A (Donald Knuth, 247$21): 60 members: leaves 200-258 and X (247$6001).
+//     First page 50, chunk of 10.
+//   2500$4002 B (Margaret Hamilton, 247$22): X, Y (247$6002) and sub-org C.
+//   2500$4003 C (Katherine Johnson, 247$23): leaves 247$6003, 247$6004.
+// X is in both A and B. 185 distinct people in all.
+export const X = detail('247$6001', 'Xavier Example', { title: 'Engineer', location: 'Oslo', leaf: true });
+export const Y = detail('247$6002', 'Yara Example', { title: 'Analyst', location: 'Lima', leaf: true });
+const ROOT = detail('2500$4000', 'Research  (Barbara Liskov)', { owner: ['247$20', 'Barbara Liskov'], title: 'Head of Research', location: 'Boston', size: 120 });
+const ORG_A = detail('2500$4001', 'A  (Donald Knuth)', { owner: ['247$21', 'Donald Knuth'], title: 'Director A', location: 'Palo Alto', size: 60 });
+const ORG_B = detail('2500$4002', 'B  (Margaret Hamilton)', { owner: ['247$22', 'Margaret Hamilton'], title: 'Director B', location: 'Cambridge', size: 3 });
+const ORG_C = detail('2500$4003', 'C  (Katherine Johnson)', { owner: ['247$23', 'Katherine Johnson'], title: 'Lead C', location: 'Hampton', size: 2 });
+export const TREE_ROUTES = {
+  'POST /acme/navigable/2500$4000.htmld': navigator(null, ROOT, [ORG_A, ORG_B, ...range(1, 49)], { count: 120, chunk: '/acme/navigablechunk/r/1' }),
+  'GET /acme/navigablechunk/r/1.htmld?startRow=50&maxRows=50': chunk(range(49, 99), 120),
+  'GET /acme/navigablechunk/r/1.htmld?startRow=100&maxRows=50': chunk(range(99, 119), 120),
+  'POST /acme/navigable/2500$4001.htmld': navigator(ROOT, ORG_A, [...range(200, 249), X], { count: 60, chunk: '/acme/navigablechunk/a/1' }),
+  'GET /acme/navigablechunk/a/1.htmld?startRow=50&maxRows=50': chunk(range(249, 259), 60),
+  'POST /acme/navigable/2500$4002.htmld': navigator(ROOT, ORG_B, [X, Y, ORG_C]),
+  'POST /acme/navigable/2500$4003.htmld': navigator(ORG_B, ORG_C, [detail('247$6003', 'Zed Example', { title: 'Tech', location: 'Rome', leaf: true }), detail('247$6004', 'Zoe Example', { title: 'Tech', location: 'Rome', leaf: true })]),
+};
