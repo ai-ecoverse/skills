@@ -35,6 +35,19 @@ test('what is stored: parsed answers per tenant, no chunk URL, cookie, token or 
   ok(raw.includes('Compilers'));
 });
 
+test('the cache is private to the user: directory 0700, file 0600', async () => {
+  const cacheDir = path.join(tmp(), 'nested', 'workday');
+  // A permissive umask, as on a typical host: the modes must come from the code, not the umask.
+  const old = process.umask(0o022);
+  try {
+    await run(['orgchart', 'Ada Lovelace', '--json'], { cacheDir });
+  } finally {
+    process.umask(old);
+  }
+  is(fs.statSync(cacheDir).mode & 0o777, 0o700);
+  is(fs.statSync(path.join(cacheDir, files(cacheDir)[0])).mode & 0o777, 0o600);
+});
+
 test('an entry older than --max-age is fetched again; the default is 24 hours', async () => {
   const cacheDir = tmp();
   await run(['find', 'Ada'], { cacheDir });

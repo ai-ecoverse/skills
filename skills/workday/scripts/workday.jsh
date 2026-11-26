@@ -173,9 +173,11 @@ async function cacheSave() {
   const now = Date.now();
   for (const [k, e] of Object.entries(_cache.entries)) if (!(e && now - e.at <= KEEP)) delete _cache.entries[k];
   const s = await site();
-  await fs.promises.mkdir(path.dirname(_cache.file), { recursive: true });
+  // The cache holds directory data (names, titles, emails, managers): private to this user.
+  await fs.promises.mkdir(path.dirname(_cache.file), { recursive: true, mode: 0o700 });
   const tmp = `${_cache.file}.${process.pid || 0}.tmp`;
-  await fs.promises.writeFile(tmp, JSON.stringify({ version: CACHE_VERSION, host: new URL(s.origin).hostname, tenant: s.tenant, entries: _cache.entries }));
+  await fs.promises.writeFile(tmp, JSON.stringify({ version: CACHE_VERSION, host: new URL(s.origin).hostname, tenant: s.tenant, entries: _cache.entries }), { mode: 0o600 });
+  await fs.promises.chmod(tmp, 0o600);
   await fs.promises.rename(tmp, _cache.file);
   _cache.dirty = 0;
 }
