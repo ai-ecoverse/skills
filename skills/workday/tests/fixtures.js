@@ -243,3 +243,9 @@ export const TREE_ROUTES = {
   'POST /acme/navigable/2500$4002.htmld': navigator(ROOT, ORG_B, [X, Y, ORG_C]),
   'POST /acme/navigable/2500$4003.htmld': navigator(ORG_B, ORG_C, [detail('247$6003', 'Zed Example', { title: 'Tech', location: 'Rome', leaf: true }), detail('247$6004', 'Zoe Example', { title: 'Tech', location: 'Rome', leaf: true })]),
 };
+
+// ── keepalive ─────────────────────────────────────────────────────────
+// home.htmld with the session fields the client reads (invented token).
+export const homeWith = (minutes, token = 'TEST-SESSION-TOKEN-0000') => ({ ...HOME, sessionSecureToken: token, sessionTimeoutMinutes: minutes });
+export const PING_OK = (minutes = 30) =>
+  `<?xml version="1.0" encoding="UTF-8"?><nyw:Keepalive_Response xmlns:nyw="urn:com.netyourwork/aod" nyw:Session_Timeout_Minutes="${minutes}"/>`;

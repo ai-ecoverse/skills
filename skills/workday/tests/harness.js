@@ -66,9 +66,11 @@ export const ROUTES = {
 // can be an array: the answers are used in order, the last one repeats.
 export async function run(
   args,
-  { routes = ROUTES, tab = { targetId: 'T1', url: `${ORIGIN}/acme/d/home.htmld` }, cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wdcache-')), stdin = '' } = {}
+  { routes = ROUTES, tab = { targetId: 'T1', url: `${ORIGIN}/acme/d/home.htmld` }, cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wdcache-')), stdin = '', start = Date.UTC(2030, 0, 2, 9, 0, 0) } = {}
 ) {
   const sleeps = [];
+  // A fake clock: it starts at `start` and only moves when the CLI sleeps.
+  let clock = start;
   const seq = {};
   const calls = [];
   const out = [];
@@ -109,7 +111,15 @@ export async function run(
       table: (rows) => rows.map((r) => r.join(' | ')).join('\n'),
       trunc: (s) => String(s),
     },
-    './lib/workday.js': { ...wd, sleep: async (ms) => void sleeps.push(ms) },
+    './lib/workday.js': {
+      ...wd,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+      now: () => clock,
+      requestId: () => 'req0001',
+    },
     fs: { ...fs, readFileSync: (f, ...r) => (f === 0 ? stdin : fs.readFileSync(f, ...r)) },
     os,
     path,

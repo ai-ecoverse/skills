@@ -210,6 +210,46 @@ function parseDuration(text) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const now = () => Date.now();
+
+// 32 hex characters, the shape of the client's `crypto.randomUUID()` without dashes.
+function requestId() {
+  return require('crypto').randomBytes(16).toString('hex');
+}
+
+// ── keepalive ─────────────────────────────────────────────────────────
+// Workday's client extends an idle session with GET /<tenant>/ping.htmld
+// (see references/endpoints.md). Its answer is
+// <nyw:Keepalive_Response nyw:Session_Timeout_Minutes="30"/>. A signed-out
+// session answers with a sign-in page or an error instead.
+
+// The ping body → { minutes } (minutes may be null), or null when it is not
+// the keepalive answer.
+function parseKeepalive(body) {
+  if (typeof body !== 'string') return null;
+  const m = /<(?:[A-Za-z]+:)?Keepalive_Response\b([^>]*)>/.exec(body);
+  if (!m) return null;
+  const t = /Session_Timeout_Minutes="(\d+)"/.exec(m[1]);
+  return { minutes: t ? Number(t[1]) : null };
+}
+
+// How often to touch the session: a third of the idle timeout, so two touches
+// can fail before it lapses; at least a minute; 5 minutes when the timeout is
+// not known.
+function keepaliveInterval(timeoutMinutes) {
+  if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0) return 5 * 60000;
+  return Math.max(60000, Math.floor(timeoutMinutes / 3) * 60000);
+}
+
+// A signed-out session is not an error to retry: say what the body was.
+// → a short reason, or null when the body is not a sign-in page or an XML error.
+function sessionGone(status, body) {
+  if (status === 401 || status === 403) return `HTTP ${status}`;
+  const problem = workdayError(body);
+  if (problem && problem.kind === 'html') return 'sign-in page';
+  if (problem) return `XML error: ${problem.message}`;
+  return null;
+}
 
 // ── cache ─────────────────────────────────────────────────────────────
 // One file per tenant: <host>_<tenant>.json. Both parts are already
@@ -325,6 +365,11 @@ module.exports = {
   isRateLimited,
   parseDuration,
   sleep,
+  now,
+  requestId,
+  parseKeepalive,
+  keepaliveInterval,
+  sessionGone,
   cacheFileName,
   entryFresh,
   parseLookupInput,
