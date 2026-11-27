@@ -145,6 +145,9 @@ const AUTH_PREAMBLE = `
       } catch (e) {}
     };
     const __of = window.fetch;
+    // Our own token exchanges go around the hook (see __getToken), so the hook
+    // never records a refresh token we just used over the rotated one.
+    window.__sliccTeamsFetch = __of;
     window.fetch = function (input, init) {
       try {
         const u = (typeof input === 'string') ? input : (input && input.url) || '';
@@ -175,7 +178,7 @@ const AUTH_PREAMBLE = `
       const bd = new URLSearchParams({ client_id: au.clientId, grant_type: 'refresh_token', refresh_token: au.rt, scope: scope, client_info: '1' });
       let tj;
       try {
-        const tr = await fetch(au.authority + '/oauth2/v2.0/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: bd.toString() });
+        const tr = await (window.__sliccTeamsFetch || fetch)(au.authority + '/oauth2/v2.0/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: bd.toString() });
         tj = await tr.json();
       } catch (e) { continue; }
       if (!tj || !tj.access_token) continue;
@@ -252,22 +255,54 @@ async function findTeamsTab() {
   die(`Teams did not load in its tab. Open ${TEAMS_URL}, sign in, then retry.`);
 }
 
+// `playwright-cli tab-list` lines: `<n>: [<targetId>] <url> "<title>"[ (active)]`.
+function parseTabList(text) {
+  const tabs = [];
+  for (const line of String(text || '').split('\n')) {
+    const m = /^\s*\d+:\s*\[([A-Fa-f0-9]+)\]\s+(\S+)(?:\s+"(.*)")?/.exec(line);
+    if (m) tabs.push({ targetId: m[1], url: m[2], title: m[3] || '' });
+  }
+  return tabs;
+}
+
+function hostOf(url) {
+  try { return new URL(url).host; } catch (e) { return ''; }
+}
+
+// Every open Teams tab. sliccy:browser's findTab returns only the first match,
+// and teams' own background tab is on the same host, so list them all.
+async function listTeamsTabs() {
+  let r;
+  try { r = await exec.spawn(['playwright-cli', 'tab-list']); } catch (e) { r = null; }
+  if (!r || r.exitCode !== 0) return null;
+  return parseTabList(r.stdout).filter((t) => isTeamsHost(hostOf(t.url)));
+}
+
 // Live captions and the in-call chat are in the user's own meeting tab, and
 // they need no token, so these commands use it as it is and never reload it:
-// --tab=<targetId>, else the user's Teams tab whose title names a meeting or a
-// call, else the only Teams tab open.
+// --tab=<targetId>, else a Teams tab other than teams' own whose title names a
+// meeting or a call, else the first such tab.
+function pickMeetingTab(tabs, own) {
+  const theirs = (tabs || []).filter((t) => t.targetId !== own);
+  if (!theirs.length) return null;
+  return theirs.find((t) => /meeting|call|besprechung|anruf/i.test(String(t.title || ''))) || theirs[0];
+}
+
 async function findMeetingTab() {
   if (typeof flags.tab === 'string' && flags.tab) return { targetId: flags.tab };
   const own = _readState('tab.json').targetId;
-  const tabs = [];
-  for (const host of TEAMS_HOSTS) {
-    const re = new RegExp(`^https://${host.replace(/\./g, '\\.')}/`);
-    const t = await browser.findTab({ urlMatch: re });
-    if (t && _targetId(t) !== own) tabs.push(t);
+  let tabs = await listTeamsTabs();
+  if (tabs === null) {
+    // No playwright-cli: fall back to the first Teams tab per host.
+    tabs = [];
+    for (const host of TEAMS_HOSTS) {
+      const t = await browser.findTab({ urlMatch: new RegExp(`^https://${host.replace(/\./g, '\\.')}/`) });
+      if (t) tabs.push({ targetId: _targetId(t), url: t.url, title: t.title });
+    }
   }
-  if (!tabs.length) die(`No Teams meeting tab found. Join the meeting in ${TEAMS_URL}, or pass --tab=<targetId>.`);
-  const meeting = tabs.find((t) => /meeting|call|besprechung|anruf/i.test(String(t.title || '')));
-  return meeting || tabs[0];
+  const tab = pickMeetingTab(tabs, own);
+  if (!tab) die(`No Teams meeting tab found. Join the meeting in ${TEAMS_URL}, or pass --tab=<targetId>.`);
+  return { targetId: tab.targetId };
 }
 
 async function ensureTab() {
