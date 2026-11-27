@@ -618,11 +618,27 @@ async function cmdLogout() {
       });
     } catch { /* best effort */ }
   }
-  await writeConfig({
+  const cleared = {
     client_id: '', client_secret: '', refresh_token: '',
     access_token: '', expires_at: 0, account: '',
-  });
+  };
+  await writeConfig(cleared);
+  // A sign-in an older version left in the skill folder (skill.config()) is
+  // shadowed by the new file but would stay on disk, possibly readable by
+  // others. Clear it too where we can; a root-owned folder refuses (EACCES).
+  let legacyLeft = false;
+  if (STATE_DIR) {
+    try {
+      const legacy = (await skill.config()) || {};
+      if (legacy.refresh_token || legacy.access_token) await skill.config(cleared);
+    } catch {
+      legacyLeft = true;
+    }
+  }
   process.stdout.write(`${C.green('✓')} Persisted Gmail credentials cleared.\n`);
+  if (legacyLeft) {
+    process.stdout.write(`  ${C.gray('An older copy in the skill folder could not be cleared (no write access); delete its scripts/.config as its owner.')}\n`);
+  }
 }
 
 async function cmdMail() {

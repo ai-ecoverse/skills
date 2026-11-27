@@ -70,3 +70,40 @@ test('load falls back to the legacy config, and to {} without one', async () => 
   is(await setup(memfs(), { account: 'legacy' }).loadConfig(), { account: 'legacy' });
   is(await setup(memfs(), null).loadConfig(), {});
 });
+
+function logoutSetup(legacy, { legacyWritable = true } = {}) {
+  const fs = memfs();
+  const writes = [];
+  const out = [];
+  const scope = {
+    STATE_DIR: '/home/u/.local/state/gmail',
+    fs,
+    flags: { 'no-revoke': true },
+    process: { pid: 7, stdout: { write: (s) => out.push(s) } },
+    C: { green: (s) => s, gray: (s) => s },
+    REVOKE_URL: 'https://revoke.example',
+    skill: {
+      config: async (v) => {
+        if (v === undefined) return legacy;
+        if (!legacyWritable) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+        writes.push(v);
+        return null;
+      },
+    },
+  };
+  return { ...load(SOURCE, ['loadConfig', 'writeConfig', 'cmdLogout'], scope), fs, writes, out };
+}
+
+test('logout --no-revoke also clears a legacy refresh token', async () => {
+  const t = logoutSetup({ refresh_token: 'x' });
+  await t.cmdLogout();
+  is(t.writes.length, 1, 'legacy config rewritten');
+  is(t.writes[0].refresh_token, '');
+  is(JSON.parse(t.fs.files['/home/u/.local/state/gmail/config.json'].data).refresh_token, '');
+});
+
+test('logout says so when the legacy copy cannot be cleared', async () => {
+  const t = logoutSetup({ refresh_token: 'x' }, { legacyWritable: false });
+  await t.cmdLogout();
+  ok(t.out.join('').includes('could not be cleared'));
+});
