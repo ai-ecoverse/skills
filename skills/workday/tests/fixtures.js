@@ -1,11 +1,25 @@
 // fixtures.js — Workday UI responses, shaped like the ones captured live on
 // 2026-11-25 (see references/endpoints.md), with invented people and IDs.
 
-const moniker = (instanceId, text, extra = {}) => ({ widget: 'moniker', instanceId, text, ...extra });
-const list = (propertyName, instances, extra = {}) => ({ widget: 'monikerList', instances, propertyName, ...extra });
+const moniker = (instanceId, text, extra = {}) => ({
+  widget: 'moniker',
+  instanceId,
+  text,
+  ...extra,
+});
+const list = (propertyName, instances, extra = {}) => ({
+  widget: 'monikerList',
+  instances,
+  propertyName,
+  ...extra,
+});
 
 // A navigatorDetail: an org (owner + title) or a person (leaf).
-export function detail(id, name, { owner, title = '', location = '', size = 0, leaf = false } = {}) {
+export function detail(
+  id,
+  name,
+  { owner, title = '', location = '', size = 0, leaf = false } = {}
+) {
   const who = owner || [id, name];
   return {
     widget: 'navigatorDetail',
@@ -13,7 +27,10 @@ export function detail(id, name, { owner, title = '', location = '', size = 0, l
     childrenAndPeersCount: size,
     hasChildren: size > 0,
     ...(leaf ? { leaf: true } : {}),
-    navigatorInstance: { widget: 'navigatorList', instances: [{ widget: 'navigator', instanceId: id, text: name }] },
+    navigatorInstance: {
+      widget: 'navigatorList',
+      instances: [{ widget: 'navigator', instanceId: id, text: name }],
+    },
     navigatorItems: [
       {
         widget: 'navigatorItem',
@@ -36,8 +53,16 @@ export const ORG_TEAM = detail('2500$2001', 'Analytical Engines  (Charles Babbag
   location: 'London',
   size: 3,
 });
-export const ADA = detail('247$1001', 'Ada Lovelace', { title: 'Principal', location: 'London', leaf: true });
-export const ALAN = detail('247$1002', 'Alan Turing', { title: 'Scientist', location: 'Bletchley', leaf: true });
+export const ADA = detail('247$1001', 'Ada Lovelace', {
+  title: 'Principal',
+  location: 'London',
+  leaf: true,
+});
+export const ALAN = detail('247$1002', 'Alan Turing', {
+  title: 'Scientist',
+  location: 'Bletchley',
+  leaf: true,
+});
 export const SUB = detail('2500$2002', 'Compilers  (Kathleen Booth)', {
   owner: ['247$1003', 'Kathleen Booth'],
   title: 'Director, Compilers',
@@ -138,12 +163,22 @@ export function profile(id, name, { title, email, managers = [], org, team }) {
                 widget: 'headerCardItem',
                 headerCardItem: {
                   widget: 'compositeList',
-                  composites: [{ widget: 'composite', header: list('wd:Manager_For_Position--IS', managers.map(([i, n]) => moniker(i, n))) }],
+                  composites: [
+                    {
+                      widget: 'composite',
+                      header: list(
+                        'wd:Manager_For_Position--IS',
+                        managers.map(([i, n]) => moniker(i, n))
+                      ),
+                    },
+                  ],
                 },
               },
               {
                 widget: 'headerCardItem',
-                headerCardItem: list('wd:Location_Not_Secured--IS', [moniker('216$1', 'London')], { label: 'Location' }),
+                headerCardItem: list('wd:Location_Not_Secured--IS', [moniker('216$1', 'London')], {
+                  label: 'Location',
+                }),
               },
             ],
           },
@@ -175,7 +210,10 @@ export function teamPage(orgId, orgName, ancestors) {
     widget: 'root',
     body: {
       widget: 'hierarchyNavigator',
-      navigatorInstance: { widget: 'navigatorList', instances: [{ widget: 'navigator', instanceId: orgId, text: orgName }] },
+      navigatorInstance: {
+        widget: 'navigatorList',
+        instances: [{ widget: 'navigator', instanceId: orgId, text: orgName }],
+      },
       navigationUri: '/acme/navigable',
       taskIid: '2998$55',
       workerIid: '247$1001',
@@ -190,8 +228,16 @@ export function navigator(parent, self, children, { count, chunk } = {}) {
     body: {
       widget: 'navigatorResponse',
       navigatorContainers: [
-        { widget: 'navigatorContainer', navigatorContainerNodeType: 'PARENT', navigatorDetails: parent ? [parent] : [] },
-        { widget: 'navigatorContainer', navigatorContainerNodeType: 'SELF', navigatorDetails: [self] },
+        {
+          widget: 'navigatorContainer',
+          navigatorContainerNodeType: 'PARENT',
+          navigatorDetails: parent ? [parent] : [],
+        },
+        {
+          widget: 'navigatorContainer',
+          navigatorContainerNodeType: 'SELF',
+          navigatorDetails: [self],
+        },
         {
           widget: 'navigatorContainer',
           navigatorContainerNodeType: 'CHILD_NODES_AND_LEAVES',
@@ -206,7 +252,8 @@ export function navigator(parent, self, children, { count, chunk } = {}) {
 
 export const MISSING_PARM =
   '<?xml version="1.0" encoding="UTF-8"?><wml:System_Error xmlns:wml="http://www.workday.com/ns/model/1.0" Type="com.workday.ui.appservice.oms.OmsRemoteException"><wml:Message>Missing Required Parm: Navigable_Task--IS (15$35098)</wml:Message></wml:System_Error>';
-export const SIGN_IN_PAGE = '\n\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"><html><body>Sign In</body></html>';
+export const SIGN_IN_PAGE =
+  '\n\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"><html><body>Sign In</body></html>';
 
 export const TOO_MANY =
   '<?xml version="1.0" encoding="UTF-8"?><wml:Application_Error xmlns:wml="http://www.workday.com/ns/model/1.0" Type="Validation"><wml:Message>Too many repeating requests. Please try again later.</wml:Message></wml:Application_Error>';
@@ -215,9 +262,18 @@ export const SERVER_ERROR =
 
 // A person card with a generated id: person(5) is 247$5005.
 export const person = (n, extra = {}) =>
-  detail(`247$${5000 + n}`, `Person ${n}`, { title: `Role ${n}`, location: n % 2 ? 'Berlin' : 'Paris', leaf: true, ...extra });
+  detail(`247$${5000 + n}`, `Person ${n}`, {
+    title: `Role ${n}`,
+    location: n % 2 ? 'Berlin' : 'Paris',
+    leaf: true,
+    ...extra,
+  });
 
-const chunk = (details, totalCount) => ({ widget: 'navigatorDetailsChunk', totalCount, navigatorDetails: details });
+const chunk = (details, totalCount) => ({
+  widget: 'navigatorDetailsChunk',
+  totalCount,
+  navigatorDetails: details,
+});
 const range = (from, to) => Array.from({ length: to - from }, (_, i) => person(from + i));
 
 // Orgs for the tree tests, under the tenant `acme`:
@@ -228,18 +284,63 @@ const range = (from, to) => Array.from({ length: to - from }, (_, i) => person(f
 //   2500$4002 B (Margaret Hamilton, 247$22): X, Y (247$6002) and sub-org C.
 //   2500$4003 C (Katherine Johnson, 247$23): leaves 247$6003, 247$6004.
 // X is in both A and B. 185 distinct people in all.
-export const X = detail('247$6001', 'Xavier Example', { title: 'Engineer', location: 'Oslo', leaf: true });
-export const Y = detail('247$6002', 'Yara Example', { title: 'Analyst', location: 'Lima', leaf: true });
-const ROOT = detail('2500$4000', 'Research  (Barbara Liskov)', { owner: ['247$20', 'Barbara Liskov'], title: 'Head of Research', location: 'Boston', size: 120 });
-const ORG_A = detail('2500$4001', 'A  (Donald Knuth)', { owner: ['247$21', 'Donald Knuth'], title: 'Director A', location: 'Palo Alto', size: 60 });
-const ORG_B = detail('2500$4002', 'B  (Margaret Hamilton)', { owner: ['247$22', 'Margaret Hamilton'], title: 'Director B', location: 'Cambridge', size: 3 });
-const ORG_C = detail('2500$4003', 'C  (Katherine Johnson)', { owner: ['247$23', 'Katherine Johnson'], title: 'Lead C', location: 'Hampton', size: 2 });
+export const X = detail('247$6001', 'Xavier Example', {
+  title: 'Engineer',
+  location: 'Oslo',
+  leaf: true,
+});
+export const Y = detail('247$6002', 'Yara Example', {
+  title: 'Analyst',
+  location: 'Lima',
+  leaf: true,
+});
+const ROOT = detail('2500$4000', 'Research  (Barbara Liskov)', {
+  owner: ['247$20', 'Barbara Liskov'],
+  title: 'Head of Research',
+  location: 'Boston',
+  size: 120,
+});
+const ORG_A = detail('2500$4001', 'A  (Donald Knuth)', {
+  owner: ['247$21', 'Donald Knuth'],
+  title: 'Director A',
+  location: 'Palo Alto',
+  size: 60,
+});
+const ORG_B = detail('2500$4002', 'B  (Margaret Hamilton)', {
+  owner: ['247$22', 'Margaret Hamilton'],
+  title: 'Director B',
+  location: 'Cambridge',
+  size: 3,
+});
+const ORG_C = detail('2500$4003', 'C  (Katherine Johnson)', {
+  owner: ['247$23', 'Katherine Johnson'],
+  title: 'Lead C',
+  location: 'Hampton',
+  size: 2,
+});
 export const TREE_ROUTES = {
-  'POST /acme/navigable/2500$4000.htmld': navigator(null, ROOT, [ORG_A, ORG_B, ...range(1, 49)], { count: 120, chunk: '/acme/navigablechunk/r/1' }),
+  'POST /acme/navigable/2500$4000.htmld': navigator(null, ROOT, [ORG_A, ORG_B, ...range(1, 49)], {
+    count: 120,
+    chunk: '/acme/navigablechunk/r/1',
+  }),
   'GET /acme/navigablechunk/r/1.htmld?startRow=50&maxRows=50': chunk(range(49, 99), 120),
   'GET /acme/navigablechunk/r/1.htmld?startRow=100&maxRows=50': chunk(range(99, 119), 120),
-  'POST /acme/navigable/2500$4001.htmld': navigator(ROOT, ORG_A, [...range(200, 249), X], { count: 60, chunk: '/acme/navigablechunk/a/1' }),
+  'POST /acme/navigable/2500$4001.htmld': navigator(ROOT, ORG_A, [...range(200, 249), X], {
+    count: 60,
+    chunk: '/acme/navigablechunk/a/1',
+  }),
   'GET /acme/navigablechunk/a/1.htmld?startRow=50&maxRows=50': chunk(range(249, 259), 60),
   'POST /acme/navigable/2500$4002.htmld': navigator(ROOT, ORG_B, [X, Y, ORG_C]),
-  'POST /acme/navigable/2500$4003.htmld': navigator(ORG_B, ORG_C, [detail('247$6003', 'Zed Example', { title: 'Tech', location: 'Rome', leaf: true }), detail('247$6004', 'Zoe Example', { title: 'Tech', location: 'Rome', leaf: true })]),
+  'POST /acme/navigable/2500$4003.htmld': navigator(ORG_B, ORG_C, [
+    detail('247$6003', 'Zed Example', { title: 'Tech', location: 'Rome', leaf: true }),
+    detail('247$6004', 'Zoe Example', { title: 'Tech', location: 'Rome', leaf: true }),
+  ]),
 };
+
+export const homeWith = (minutes, token = 'TEST-SESSION-TOKEN-0000') => ({
+  ...HOME,
+  sessionSecureToken: token,
+  sessionTimeoutMinutes: minutes,
+});
+export const PING_OK = (minutes = 30) =>
+  `<?xml version="1.0" encoding="UTF-8"?><nyw:Keepalive_Response xmlns:nyw="urn:com.netyourwork/aod" nyw:Session_Timeout_Minutes="${minutes}"/>`;

@@ -25,6 +25,9 @@ USAGE
                                      id, title, org, location, manager
   workday tree <name|id>             Everyone below a person or an org (247$… or
                                      2500$…), with their top-level group
+  workday keepalive                  Touch the session every few minutes so Workday does
+                                     not sign you out for being idle; stops when the
+                                     session is gone
   workday cache [info]               Cache entries, size and location
   workday cache clear                Empty the cache
 
@@ -35,9 +38,19 @@ FLAGS
   --max-age D   Reuse cached answers up to D old: 90s, 15m, 1h, 2d (default: 24h)
   --fresh       Ignore the cache for reading and refresh it
   --gap D       lookup, tree: wait D between requests (default: 1s)
+  --every D     keepalive: time between touches (default: a third of the
+                session's idle timeout, 10m for 30 minutes)
+  --once        keepalive: touch once, then exit (for cron)
+  --count N     keepalive: stop after N touches
   --retry-wait D  First wait after "Too many repeating requests" (default: 15s;
                 doubles each retry, 4 tries)
   Put flags after the names: a flag may take the next word as its value.
+
+KEEPALIVE
+  Calls the request Workday's own "your session is about to expire" prompt makes
+  (GET /<tenant>/ping.htmld). It only extends a session you already signed in to:
+  it never signs in, and Workday's absolute session limit still applies. Exit 0 =
+  every touch worked; exit 1 = a touch failed, or the session is gone.
 
 CACHE
   Answers are kept per tenant in ~/.cache/workday/<host>_<tenant>.json (or in
@@ -103,12 +116,10 @@ async function site() {
   return _site;
 }
 
-// One wrapper, so every command reports an expired session the same way.
-// Workday answers many errors with 200 and an XML or HTML body.
 let sent = false;
-async function call(path, { method = 'GET', form } = {}) {
+async function send(path, { method = 'GET', form, headers } = {}) {
   const s = await site();
-  const opts = { method, headers: { Accept: 'application/json' } };
+  const opts = { method, headers: { Accept: 'application/json', ...(headers || {}) } };
   if (form) {
     opts.headers['Content-Type'] = 'application/x-www-form-urlencoded';
     opts.body = new URLSearchParams(form).toString();
@@ -116,18 +127,24 @@ async function call(path, { method = 'GET', form } = {}) {
   if (gap && sent) await wd.sleep(gap);
   sent = true;
   let wait = retryWait;
-  let res;
   for (let attempt = 1; ; attempt++) {
-    res = await browser.fetch(s.tab, `${s.origin}${path}`, opts);
-    if (res.status === 401 || res.status === 403) cli.die(`session expired — ${SIGN_IN}`, { prefix: PREFIX });
-    if (!wd.isRateLimited(res.body)) break;
-    if (attempt >= MAX_TRIES) {
-      cli.die(`Workday is rate limiting this session ("Too many repeating requests") and still refused after ${MAX_TRIES} tries; wait a few minutes, then retry (answers already fetched are cached)`, { prefix: PREFIX });
-    }
+    const res = await browser.fetch(s.tab, `${s.origin}${path}`, opts);
+    if (res.status === 401 || res.status === 403 || !wd.isRateLimited(res.body)) return res;
+    if (attempt >= MAX_TRIES) return { limited: true };
     cli.warn(`Workday: too many requests; waiting ${Math.round(wait / 1000)}s (try ${attempt + 1} of ${MAX_TRIES})`);
     await wd.sleep(wait);
     wait *= 2;
   }
+}
+
+const RATE_LIMITED = `Workday is rate limiting this session ("Too many repeating requests") and still refused after ${MAX_TRIES} tries; wait a few minutes, then retry`;
+
+// One wrapper, so every command reports an expired session the same way.
+// Workday answers many errors with 200 and an XML or HTML body.
+async function call(path, { method = 'GET', form } = {}) {
+  const res = await send(path, { method, form });
+  if (res.limited) cli.die(`${RATE_LIMITED} (answers already fetched are cached)`, { prefix: PREFIX });
+  if (res.status === 401 || res.status === 403) cli.die(`session expired — ${SIGN_IN}`, { prefix: PREFIX });
   const problem = wd.workdayError(res.body);
   if (problem && problem.kind === 'html') {
     cli.die(`Workday returned a page instead of data for ${path} (HTTP ${res.status}); your session may have expired — ${SIGN_IN}`, { prefix: PREFIX });
@@ -413,6 +430,73 @@ async function cmdTree() {
   console.log(fmt.table(tree.people.map((p) => [p.name, fmt.trunc(p.title, 50), p.location, p.group || '', id(p.id)])).split('\n').map((l) => `  ${l}`).join('\n'));
 }
 
+async function touch() {
+  const s = await site();
+  const home = await send(`/${s.tenant}/home.htmld`);
+  if (home.limited) return { problem: 'rate limited' };
+  const gone = wd.sessionGone(home.status, home.body);
+  if (gone) return { gone };
+  if (!home.ok) return { problem: `HTTP ${home.status} from home.htmld` };
+  let root = home.body;
+  if (typeof root === 'string') {
+    try {
+      root = JSON.parse(root);
+    } catch (_) {
+      return { gone: 'home.htmld was not JSON' };
+    }
+  }
+  const token = root && root.sessionSecureToken;
+  if (typeof token !== 'string' || !token) return { gone: 'no session token in home.htmld' };
+  const timeout = Number.isFinite(root.sessionTimeoutMinutes) ? root.sessionTimeoutMinutes : null;
+  const ping = await send(`/${s.tenant}/ping.htmld?clientRequestID=${wd.requestId()}`, { headers: { 'Session-Secure-Token': token } });
+  if (ping.limited) return { problem: 'rate limited' };
+  const pingGone = wd.sessionGone(ping.status, ping.body);
+  if (pingGone) return { gone: pingGone };
+  if (!ping.ok) return { problem: `HTTP ${ping.status} from ping.htmld` };
+  const answer = wd.parseKeepalive(ping.body);
+  if (!answer) return { problem: 'ping.htmld sent an answer this CLI does not know' };
+  return { ok: true, minutes: answer.minutes === null ? timeout : answer.minutes };
+}
+
+const clock = (ms) => new Date(ms).toTimeString().slice(0, 8);
+const human = (ms) => (ms % 3600000 === 0 ? `${ms / 3600000}h` : ms % 60000 === 0 ? `${ms / 60000}m` : `${Math.round(ms / 1000)}s`);
+
+async function cmdKeepalive() {
+  const every = flags.every === undefined ? null : duration('every', null);
+  if (every !== null && every < 1000) cli.die('--every needs at least 1s', { prefix: PREFIX });
+  const total = flags.once === true || flags.once === 'true' ? 1 : flags.count === undefined ? Infinity : parseInt(flags.count, 10);
+  if (!(total >= 1)) cli.die('--count needs a whole number of 1 or more', { prefix: PREFIX });
+  const MAX_PROBLEMS = 3;
+  let problems = 0;
+  let failed = 0;
+  for (let n = 1; ; n++) {
+    const started = wd.now();
+    const r = await touch();
+    if (r.gone) {
+      console.log(`${clock(started)} SESSION GONE (${r.gone})`);
+      cli.die(`the Workday session is gone (${r.gone}); ${SIGN_IN}. keepalive never signs in for you`, { prefix: PREFIX });
+    }
+    const wait = every !== null ? every : wd.keepaliveInterval(r.ok ? r.minutes : null);
+    if (r.ok) {
+      problems = 0;
+      if (n === 1 && every !== null && r.minutes && every >= r.minutes * 60000) cli.warn(`--every ${human(every)} is not below the session timeout of ${r.minutes} minutes; the session can lapse between touches`);
+      console.log(`${clock(started)} OK${r.minutes ? ` (idle timeout ${r.minutes}m)` : ''}${n < total ? `, next in ${human(wait)}` : ''}`);
+    } else {
+      problems++;
+      failed++;
+      console.log(`${clock(started)} PROBLEM ${r.problem}${n < total && problems < MAX_PROBLEMS ? `, retrying in ${human(wait)}` : ''}`);
+      if (total === 1 || problems >= MAX_PROBLEMS) {
+        cli.die(r.problem === 'rate limited' ? RATE_LIMITED : `keepalive failed: ${r.problem}${problems > 1 ? ` (${problems} times in a row)` : ''}`, { prefix: PREFIX });
+      }
+    }
+    if (n >= total) {
+      if (failed) cli.die(`keepalive finished, but ${failed} of ${total} touches failed`, { prefix: PREFIX });
+      return;
+    }
+    await wd.sleep(Math.max(0, wait - (wd.now() - started)));
+  }
+}
+
 async function cmdCache() {
   const action = positional[0] || 'info';
   if (action !== 'info' && action !== 'clear') cli.die('usage: workday cache [info|clear]', { prefix: PREFIX });
@@ -468,6 +552,7 @@ async function main() {
       case 'org': return await cmdOrg();
       case 'lookup': return await cmdLookup();
       case 'tree': return await cmdTree();
+      case 'keepalive': return await cmdKeepalive();
       case 'cache': return await cmdCache();
       default: cli.die(`unknown command: ${subcommand}\nRun 'workday --help' for usage.`, { prefix: PREFIX });
     }

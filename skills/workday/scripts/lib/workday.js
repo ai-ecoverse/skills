@@ -46,7 +46,10 @@ const monikers = (list) =>
 // A sign-in or error page comes back as HTML. Returns null for anything else.
 function workdayError(body) {
   if (typeof body !== 'string') return null;
-  const xml = /<wml:(System_Error|Application_Error)\b[\s\S]*?<wml:Message>([\s\S]*?)<\/wml:Message>/.exec(body);
+  const xml =
+    /<wml:(System_Error|Application_Error)\b[\s\S]*?<wml:Message>([\s\S]*?)<\/wml:Message>/.exec(
+      body
+    );
   if (xml) return { kind: 'workday', message: clean(xml[2]) };
   if (/^\s*(<!DOCTYPE|<html)/i.test(body)) return { kind: 'html', message: 'got an HTML page' };
   return null;
@@ -66,7 +69,10 @@ function searchPeople(json) {
   const items = (json && json.listItems) || [];
   return items
     .filter((i) => i && INSTANCE_ID.test(i.instanceId || ''))
-    .filter((i) => i.iconId === 'wd-icon-user' || /^(Employee|Contingent Worker)$/.test(i.classLabel || ''))
+    .filter(
+      (i) =>
+        i.iconId === 'wd-icon-user' || /^(Employee|Contingent Worker)$/.test(i.classLabel || '')
+    )
     .map((i) => ({
       id: i.instanceId,
       name: clean(i.label),
@@ -117,7 +123,7 @@ function parseProfile(root) {
 // One card of the org chart: a person (leaf) or an organization.
 function node(detail) {
   if (!detail || typeof detail !== 'object') return null;
-  const inst = (detail.navigatorInstance && detail.navigatorInstance.instances || [])[0] || {};
+  const inst = ((detail.navigatorInstance && detail.navigatorInstance.instances) || [])[0] || {};
   const items = detail.navigatorItems || [];
   const first = items[0] || {};
   const owners = items.flatMap((i) => monikers(i.owner));
@@ -138,7 +144,7 @@ function node(detail) {
 function parseTeamPage(root) {
   const body = root && root.body;
   if (!body || body.widget !== 'hierarchyNavigator') return null;
-  const inst = (body.navigatorInstance && body.navigatorInstance.instances || [])[0] || {};
+  const inst = ((body.navigatorInstance && body.navigatorInstance.instances) || [])[0] || {};
   return {
     orgId: INSTANCE_ID.test(inst.instanceId || '') ? inst.instanceId : null,
     orgName: clean(inst.text),
@@ -198,18 +204,50 @@ function chainOf(workerId, team, self) {
 // Only this message is a reason to wait and retry; other errors are final.
 function isRateLimited(body) {
   const problem = workdayError(body);
-  return !!problem && problem.kind === 'workday' && /^Too many repeating requests\b/i.test(problem.message);
+  return (
+    !!problem &&
+    problem.kind === 'workday' &&
+    /^Too many repeating requests\b/i.test(problem.message)
+  );
 }
 
 // "15s", "500ms", "1h", "2d", "90" (seconds) → milliseconds, else null.
 function parseDuration(text) {
-  const m = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?$/i.exec(String(text === undefined ? '' : text).trim());
+  const m = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?$/i.exec(
+    String(text === undefined ? '' : text).trim()
+  );
   if (!m) return null;
   const unit = { ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 }[(m[2] || 's').toLowerCase()];
   return Math.round(Number(m[1]) * unit);
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const now = () => Date.now();
+
+function requestId() {
+  return require('crypto').randomBytes(16).toString('hex');
+}
+
+function parseKeepalive(body) {
+  if (typeof body !== 'string') return null;
+  const m = /<(?:[A-Za-z]+:)?Keepalive_Response\b([^>]*)>/.exec(body);
+  if (!m) return null;
+  const t = /Session_Timeout_Minutes="(\d+)"/.exec(m[1]);
+  return { minutes: t ? Number(t[1]) : null };
+}
+
+function keepaliveInterval(timeoutMinutes) {
+  if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0) return 5 * 60000;
+  return Math.max(60000, Math.floor(timeoutMinutes / 3) * 60000);
+}
+
+function sessionGone(status, body) {
+  if (status === 401 || status === 403) return `HTTP ${status}`;
+  const problem = workdayError(body);
+  if (problem && problem.kind === 'html') return 'sign-in page';
+  if (problem) return `XML error: ${problem.message}`;
+  return null;
+}
 
 // ── cache ─────────────────────────────────────────────────────────────
 // One file per tenant: <host>_<tenant>.json. Both parts are already
@@ -222,7 +260,13 @@ function cacheFileName(origin, tenant) {
 // An entry is { at: <ms since epoch>, value }. Older than maxAge, from the
 // future, or malformed → not fresh.
 function entryFresh(entry, now, maxAgeMs) {
-  if (!entry || typeof entry !== 'object' || !Number.isFinite(entry.at) || entry.value === undefined) return false;
+  if (
+    !entry ||
+    typeof entry !== 'object' ||
+    !Number.isFinite(entry.at) ||
+    entry.value === undefined
+  )
+    return false;
   const age = now - entry.at;
   return age >= 0 && age <= maxAgeMs;
 }
@@ -238,8 +282,16 @@ function parseLookupInput(text, asJson) {
     } catch (_) {
       return { error: 'stdin is not valid JSON; expected an array of objects with a "name" field' };
     }
-    if (!Array.isArray(data)) return { error: 'stdin JSON must be an array of objects with a "name" field' };
-    const bad = data.findIndex((o) => !o || typeof o !== 'object' || Array.isArray(o) || typeof o.name !== 'string' || !clean(o.name));
+    if (!Array.isArray(data))
+      return { error: 'stdin JSON must be an array of objects with a "name" field' };
+    const bad = data.findIndex(
+      (o) =>
+        !o ||
+        typeof o !== 'object' ||
+        Array.isArray(o) ||
+        typeof o.name !== 'string' ||
+        !clean(o.name)
+    );
     if (bad >= 0) return { error: `item ${bad} has no "name" string` };
     return { items: data.map((o) => ({ name: clean(o.name), source: o })) };
   }
@@ -256,11 +308,24 @@ function parseLookupInput(text, asJson) {
 function lookupResult(name, people, profile) {
   const pick = choosePerson(name, people);
   if (!pick.person) {
-    const cands = (pick.candidates || []).map((p) => ({ id: p.id, name: p.name, title: p.title, org: p.org }));
+    const cands = (pick.candidates || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      title: p.title,
+      org: p.org,
+    }));
     return { status: cands.length ? 'ambiguous' : 'not-found', candidates: cands };
   }
   const p = pick.person;
-  if (!profile) return { status: 'no-profile', id: p.id, name: p.name, title: p.title, org: p.org, location: p.location };
+  if (!profile)
+    return {
+      status: 'no-profile',
+      id: p.id,
+      name: p.name,
+      title: p.title,
+      org: p.org,
+      location: p.location,
+    };
   return {
     status: 'found',
     id: p.id,
@@ -292,25 +357,53 @@ async function walkTree(rootOrgId, load, { maxDepth = Infinity } = {}) {
     const { orgId, depth, group } = queue.shift();
     const nav = await load(orgId);
     if (!nav) throw new Error(`no org chart for ${orgId}`);
-    if (nav.incomplete) warnings.push(`${orgId}: listed ${nav.children.length} of ${nav.total} members`);
+    if (nav.incomplete)
+      warnings.push(`${orgId}: listed ${nav.children.length} of ${nav.total} members`);
     const orgName = (nav.self && nav.self.name) || orgId;
     if (depth === 0) {
       root = { id: orgId, name: orgName, owners: (nav.self && nav.self.owners) || [] };
       for (const o of root.owners) {
-        add({ id: o.id, name: o.name, title: (nav.self && nav.self.title) || '', location: (nav.self && nav.self.location) || '', org: orgName, group: null, groupId: null, depth: 0 });
+        add({
+          id: o.id,
+          name: o.name,
+          title: (nav.self && nav.self.title) || '',
+          location: (nav.self && nav.self.location) || '',
+          org: orgName,
+          group: null,
+          groupId: null,
+          depth: 0,
+        });
       }
     }
     for (const c of nav.children) {
       if (c.kind === 'person') {
         const g = depth === 0 ? { id: c.id, name: c.name } : group;
-        add({ id: c.id, name: c.name, title: c.title, location: c.location, org: orgName, group: g.name, groupId: g.id, depth: depth + 1 });
+        add({
+          id: c.id,
+          name: c.name,
+          title: c.title,
+          location: c.location,
+          org: orgName,
+          group: g.name,
+          groupId: g.id,
+          depth: depth + 1,
+        });
         continue;
       }
       const lead = c.owners[0] || { id: c.id, name: c.name };
       const g = depth === 0 ? lead : group;
       for (const o of c.owners) {
         const own = depth === 0 ? o : group;
-        add({ id: o.id, name: o.name, title: c.title, location: c.location, org: orgName, group: own.name, groupId: own.id, depth: depth + 1 });
+        add({
+          id: o.id,
+          name: o.name,
+          title: c.title,
+          location: c.location,
+          org: orgName,
+          group: own.name,
+          groupId: own.id,
+          depth: depth + 1,
+        });
       }
       if (!seenOrgs.has(c.id) && depth + 1 < maxDepth) {
         seenOrgs.add(c.id);
@@ -325,6 +418,11 @@ module.exports = {
   isRateLimited,
   parseDuration,
   sleep,
+  now,
+  requestId,
+  parseKeepalive,
+  keepaliveInterval,
+  sessionGone,
   cacheFileName,
   entryFresh,
   parseLookupInput,

@@ -102,6 +102,32 @@ a large org (`count` is the total, the list is shorter), so a walk that skips th
 chunk requests drops people without any error. `workday` asks for 50 rows a chunk
 and marks an org `incomplete` (not cached) if the list still falls short.
 
+## Session keepalive
+
+Found 2026-11-26 in the kernel bundle of a live tenant
+(`/wday/asset/uic-kernel/kernel.min.js`, "session-manager"), by fetching the bundle
+in the tab and searching it for `keepAlive`, `ping.htmld` and `sessionTimeout`.
+
+- `home.htmld` (the root JSON, above) carries `sessionTimeoutMinutes` (30 on that
+  tenant) and `sessionSecureToken` (a 36-character string).
+- The client's session manager has an idle timeout of `sessionTimeoutMinutes`, a
+  warning 5 minutes before it. When the user is active late in the window, or presses the reset
+  button of the "session about to expire" dialog, it calls
+
+  `GET /<t>/ping.htmld?clientRequestID=<32 hex characters>` with header
+  `Session-Secure-Token: <sessionSecureToken>`, credentials same-origin.
+
+  → HTTP 200, `text/xml`: `<nyw:Keepalive_Response xmlns:nyw="urn:com.netyourwork/aod" nyw:Session_Timeout_Minutes="30"/>`.
+- On idle timeout the client calls `/<t>/timeout.htmld` (same headers) and goes to
+  the timeout page; `workday` never calls it.
+- Measured: the ping answered the same with and without the token header, so the
+  header may not be checked; the CLI sends it anyway, as the client does.
+- Not measured: whether the ping resets the server's idle clock. The client uses
+  it for that, and `workday keepalive` relies on it; Workday's absolute session limit
+  (the client's `absoluteTimeoutMs` default is 365 days; the server's is
+  tenant policy) is separate.
+- A signed-out session answers `home.htmld` with the sign-in HTML page, or 401/403.
+
 ## Not used
 
 - `/wday/sirg/protectedapi/navigableInternal/v1/<t>/workers/<id>?navigableTask=…`
