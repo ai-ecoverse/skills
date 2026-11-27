@@ -27,6 +27,8 @@ function bytesOf(v) {
 
 export function nodeFs(files = {}) {
   const vfs = {};
+  const modes = {};
+  const ops = [];
   for (const [k, v] of Object.entries(files)) vfs[k] = bytesOf(v);
   const isDir = (p) => Object.keys(vfs).some((k) => k.startsWith(`${p.replace(/\/$/, '')}/`));
   const callbackOnly = (...a) => {
@@ -64,6 +66,8 @@ export function nodeFs(files = {}) {
     if (!o.force) throw enoent('rm', p);
   };
   return {
+    modes,
+    ops,
     files: vfs,
     text: (p) => (p in vfs ? new TextDecoder().decode(vfs[p]) : undefined),
     readFile: callbackOnly,
@@ -92,8 +96,10 @@ export function nodeFs(files = {}) {
         if (!(p in vfs)) throw enoent('open', p);
         return text(vfs[p], encOf(o));
       },
-      writeFile: async (p, d) => {
+      writeFile: async (p, d, o) => {
         vfs[p] = bytesOf(d);
+        if (o && o.mode !== undefined) modes[p] = o.mode;
+        ops.push(['writeFile', p]);
       },
       appendFile: async (p, d) => {
         const old = vfs[p] || new Uint8Array();
@@ -103,7 +109,9 @@ export function nodeFs(files = {}) {
         both.set(add, old.length);
         vfs[p] = both;
       },
-      mkdir: async () => {},
+      mkdir: async (p, o) => {
+        ops.push(['mkdir', p, o && o.mode]);
+      },
       stat: async (p) => stat(p),
       readdir: async (d) => readdir(d),
       rm: async (p, o) => rm(p, o),
@@ -112,6 +120,12 @@ export function nodeFs(files = {}) {
         if (!(a in vfs)) throw enoent('rename', a);
         vfs[b] = vfs[a];
         delete vfs[a];
+        if (a in modes) { modes[b] = modes[a]; delete modes[a]; }
+        ops.push(['rename', a, b]);
+      },
+      chmod: async (p, m) => {
+        if (!(p in vfs)) throw enoent('chmod', p);
+        modes[p] = m;
       },
     },
   };

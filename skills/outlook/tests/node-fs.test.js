@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import test, { is } from 'tst';
+import test, { is, ok } from 'tst';
 import { load } from './extract.js';
 import { nodeFs } from './node-fs.js';
 import { readScript } from './script.js';
@@ -80,4 +80,16 @@ test('the cache directory is created before the token is written', async () => {
 
 test('the shipped script does not write its cache under /shared', () => {
   is(/writeCache\([^)]*LEGACY/.test(SOURCE), false);
+});
+
+test('the token cache is written 0600, in a 0700 directory, through a rename', async () => {
+  const vfs = nodeFs();
+  const { api } = tokens(vfs, { cached: 'eyJ.tab.token' });
+  await api.extractTokenFromBrowser();
+  is(vfs.modes[TOKEN_PATH], 0o600, 'file mode');
+  is(vfs.ops.find((o) => o[0] === 'mkdir')[2], 0o700, 'directory mode');
+  const write = vfs.ops.find((o) => o[0] === 'writeFile');
+  const rename = vfs.ops.find((o) => o[0] === 'rename');
+  ok(write && write[1] !== TOKEN_PATH, 'written to a temporary file first');
+  is(rename && rename[2], TOKEN_PATH, 'then renamed over the cache');
 });

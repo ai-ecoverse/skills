@@ -1,139 +1,62 @@
 ---
 name: teams
 description: >-
-  Interact with Microsoft Teams via the Graph API — read messages, post to channels,
-  search, read threads, look up users, view mentions/activity, and get channel info.
-  Also transcribe the meeting you're currently in by turning on live captions and
-  capturing them to a timestamped, speaker-attributed transcript file.
-  Supports all teams and channels the user has access to, with auth via the live browser
-  session. Use when the user wants to check Teams messages, post a Teams message, search
-  Teams channels, read a thread, get user info, view mentions, transcribe or caption a
-  live meeting, or feed Microsoft Teams items into the SLICC `monday` start-of-day
-  inbox digest (the monday aggregator skill — unrelated to the monday.com SaaS product).
-  Triggers on mentions of Teams, Microsoft Teams, channels, messages, threads, mentions,
-  activity, digest, transcribe, transcript, captions, or meeting notes.
+  Interact with Microsoft Teams through the Graph API: read Teams channel messages,
+  chats and DMs, post to Teams channels, search Teams, read threads, look up users,
+  see your Teams mentions and activity, and get channel info. Also transcribe the
+  Teams meeting you're in from its live captions into a timestamped, speaker-
+  attributed transcript, with a copilot mode that hands each phrase to an agent. Uses
+  the signed-in Teams browser session. Use when the user wants to check or post Teams
+  messages, search Teams, read a Teams thread or chat, look up a Teams user, see Teams
+  mentions, transcribe or caption a Teams meeting, or feed Teams items into the SLICC
+  `monday` inbox digest (the monday aggregator skill, not monday.com). Triggers on
+  Teams, Microsoft Teams, Teams chat, Teams DM, Teams channel, Teams meeting, meeting
+  transcript, live captions, or meeting notes.
 allowed-tools: bash
 ---
 
 # Teams
 
 Direct API access to Microsoft Teams via the Microsoft Graph + Substrate
-Search APIs. Every request runs **inside the Teams browser tab** through
-`playwright-cli eval`: the MSAL delegated access token is read from
-`localStorage` and consumed by `fetch()` in the same eval block — it never
-leaves the page context, is never printed, and is never written to disk.
+Search APIs. Every request runs **inside a Teams browser tab** through the
+`sliccy:browser` bridge: the sign-in is minted and used by `fetch()` in the
+page. No token is printed, written to disk or seen by the script process.
 
-## Prerequisites
+## Install
 
-The user must log into Teams in their own browser first. The script will not
-authenticate on the user's behalf; it only piggybacks on a tab the user has
-already signed into.
-
-1. Open https://teams.microsoft.com in the browser and sign in.
-2. Wait until the Teams web client is fully loaded.
-3. Then run any `teams` command — the script discovers the tab automatically
-   via `playwright-cli tab-list`.
-
-If no Teams tab is found, the script exits with a clear error asking the user
-to open and sign in to Teams. No `teams auth` step exists — the page-context
-model makes it unnecessary.
-
-## Quick start
+`teams` is a jsh command (`scripts/teams.jsh`, the `bin` of this folder's
+`package.json`):
 
 ```bash
-# List joined teams
-teams teams
-
-# List channels in a team (display-name partial match works)
-teams channels "My Team"
-
-# Search for channels by name (inside one team, or across all teams)
-teams channels "My Team" --search=general
-teams channels --search=release
-
-# Read recent messages from a channel (default: last 24h)
-teams history "My Team" "General"
-teams history "My Team" "General" --since=7d --top=100
-
-# Messages mentioning/involving me (default: last 24h)
-teams activity
-teams activity --since=7d
-
-# Post a message to a channel
-teams post "My Team" "General" "Hello from SLICC!"
-
-# Reply in a thread (use the parent message id from `history`)
-teams post "My Team" "General" "Got it" --reply-to=1712345678901
-
-# Read replies to a message
-teams thread "My Team" "General" 1712345678901
-
-# Look up a user (by display name, UPN/email, or user ID)
-teams user "Jane Doe"
-teams user jane.doe@contoso.com
-
-# Channel metadata
-teams info "My Team" "General"
-
-# Full-text search across Teams messages
-teams search "deployment outage" --since=14d
-
-# Messages with no replies (default: last 48h)
-teams unanswered "My Team" "General"
-
-# Cross-team activity digest (default: last 24h)
-teams digest --since=7d
-
-# Start transcribing the meeting you're currently in (turns on live captions)
-teams transcribe
-# ...then append new lines to the transcript file any time:
-teams transcribe flush
-# ...or stream it live (blocks until you Ctrl-C):
-teams transcribe follow --out=standup.md
-# ...and stop when the meeting ends:
-teams transcribe stop
+pnpm add -g /usr/share/skills/teams        # or wherever the skill is installed
 ```
+
+## Prerequisites and tabs
+
+Sign in to Teams at https://teams.cloud.microsoft in the browser once. The
+script never signs in for you.
+
+- **API commands** (`teams`, `channels`, `history`, `post`, `search`, `activity`,
+  `digest`, `monday`, …) run in a **background tab of their own**, opened on first
+  use and kept in `~/.local/state/teams/tab.json` (or `$TEAMS_STATE_DIR`,
+  `$XDG_STATE_HOME/teams`). The first call reloads that tab once to catch the
+  sign-in (below), so it takes a few seconds; later calls reuse it. teams never
+  reloads your own tabs on its own. `--tab=<targetId>` uses that tab instead, and the
+  first API call may reload it to sign in, so don't point it at a meeting you're in.
+- **Meeting commands** (`transcribe`, `post --live`) work in **your** meeting tab,
+  which they read and click but never reload: `--tab=<targetId>`, else the Teams tab
+  whose title names a meeting or call, else the first Teams tab.
 
 ## Authentication
 
-Authentication is implicit: every API call runs inside the open Teams tab via
-`playwright-cli eval`. The MSAL access token is located in `localStorage`
-(keys containing `accesstoken` + `graph.microsoft.com` for Graph, or
-`accesstoken` + `substrate.office.com` for Substrate Search), the entry with
-the highest `expiresOn` is picked, and its `secret` field is consumed by
-`fetch()` in the same eval. The token value never crosses the process
-boundary — the script process only sees the JSON response body.
-
-If the Teams web client silently refreshes the token in the background, the
-next command picks up the fresh one automatically. If you see
-`401 Unauthorized` repeatedly, refresh the Teams tab in the browser and
-retry.
-
-> **Implementation note:** The Teams web client (v2, `teams.microsoft.com/v2/`)
-> stores MSAL tokens in `localStorage`, not `sessionStorage`. A
-> `sessionStorage` fallback exists for older Teams versions.
-
-**Before running any command,** check for an existing Teams tab and only open
-a new one if necessary:
-
-```bash
-# Check whether a Teams tab is already open
-playwright-cli tab-list | grep teams.microsoft.com
-
-# Only open a new tab if the above returns nothing
-open https://teams.microsoft.com
-```
-
-Wait for the page to fully load before running any `teams` command.
+Nothing to set up: the sign-in is taken from the Teams client inside the page
+and never leaves it. How, and why the first call reloads teams' own tab:
+`references/endpoints.md#authentication`.
 
 ## API Endpoint Note
 
-Channel message reads use the **beta** Graph endpoint
-(`https://graph.microsoft.com/beta/...`), not v1.0. The delegated token from
-the Teams browser session does not include `ChannelMessage.Read.All`, so the
-v1.0 messages endpoint returns 403. The beta endpoint works with the scopes
-the Teams session actually provides. Team listing, channel listing, user
-profile, and channel info calls use v1.0 as normal.
+Channel message reads use the **beta** Graph endpoint: the session token lacks
+`ChannelMessage.Read.All`, which v1.0 requires (403).
 
 ## Search Architecture
 
@@ -141,7 +64,7 @@ The `search` and `activity` commands use a cascading search strategy:
 
 1. **Substrate Search** (`substrate.office.com/search/api/v2/query`) — The
    internal search engine that Teams v2 itself uses. Fastest and most
-   comprehensive. Uses the substrate access token discovered in `localStorage`
+   comprehensive. Uses a Substrate access token minted in the page
    alongside the Graph token.
 2. **Graph Search API** (`/search/query` with `chatMessage`) — The official
    public API. Often fails with delegated browser tokens (400/403) due to
@@ -268,7 +191,7 @@ Scans up to `--max-teams` teams (default 10). Progress is printed to stderr.
 ### teams monday [--limit N] [--depth N] [--date Nd]
 
 `monday`-protocol inbox source (see the `monday` skill,
-`references/SOURCE_PROTOCOL.md`). Prints a **single JSON array** to stdout and
+its `SOURCE_PROTOCOL.md`). Prints a **single JSON array** to stdout and
 nothing else; all progress/warnings go to stderr and the command always exits
 `0` (an empty inbox is `[]`) — including when Teams itself is unavailable, e.g.
 no signed-in tab, so the aggregator degrades instead of failing. Intended to be
@@ -328,69 +251,60 @@ de-duplicated Markdown:
 **[15:04:48] Dragos Dascalita Haut:** And where are you taking this now?
 ```
 
-**How it works.** A `MutationObserver` on the caption virtual-list
-(`closed-caption-v2-virtual-list-content`) captures changes event-driven (no poll gaps).
-Each spoken utterance is its OWN `[data-tid="closed-caption-text"]` element whose text
-grows as it is recognized, then finalizes when the next utterance's element appears — so
-the collector keeps one buffer entry per element and **supersedes its text as it grows**,
-delivering each utterance to the webhook exactly once (when it finalizes, or after a
-short debounce for the trailing one). The speaker name sits ~2 ancestors above the text
-span (`"Name\n<text>"`). The `window` buffer survives across evals, so you can `flush` on
-any cadence without losing lines; only a tab reload clears it.
-
-> **Why DOM (not the network):** verified on the wire — Teams live captions arrive over
-> the encrypted **WebRTC media channel** and materialize only in the client DOM; there is
-> **no WebSocket/HTTP source** to tap (a HAR + WS-frame capture during active captioning
-> showed zero caption traffic). Element-level DOM capture is therefore the complete and
-> correct approach. Validated live: a 20-utterance test captured and delivered 20/20.
->
-> **Common pitfall:** the virtual-list has a single wrapper child — iterate the
-> `closed-caption-text` elements, NOT `list.children`, or you'll see one merged blob.
+How the caption collector works, and why it reads the DOM:
+`references/endpoints.md#live-captions`.
 
 > **Accuracy caveat:** captions are Teams' own speech-to-text, so names and jargon can be
 > mangled (it renders "SLICC" as "Slick", "Concur" as "conqueror", etc.). Clean up in a
 > post-pass if you need a verbatim record.
 
-#### Copilot mode — `--scoop`, `--snapshot`, and `teams post --live`
+#### Copilot mode — `--ntfy`, `follow --command`, `--snapshot`, and `teams post --live`
 
-Turn the transcript into a live "meeting copilot" that surfaces context to everyone:
+Turn the transcript into a live "meeting copilot" that surfaces context to everyone.
+SLICC 7 delivers events over ntfy (the gateway at `ntfy.sliccy.ai`), not SLICC 6's
+webhook command:
 
 ```bash
-# Fire a lick to a scoop for every finalized phrase (event-driven, no polling)
-teams transcribe start --scoop meeting-copilot
+# Run a command for every finalized phrase, locally (no network):
+teams transcribe follow --command 'agent send meeting-copilot "$TEAMS_AUTHOR: $TEAMS_TEXT"'
 
-# The scoop, on each phrase-lick, flushes + grabs a deduped screen-share frame:
+# Or POST each phrase to an ntfy.sliccy.ai hook, and subscribe where it's handled:
+teams transcribe start --ntfy=https://ntfy.sliccy.ai/hook/<id>
+ntfy sub https://ntfy.sliccy.ai/<topic> 'agent send cone --lick=webhook --source teams "$NTFY_RAW"'
+
+# The handler flushes + grabs a deduped screen-share frame:
 teams transcribe flush --snapshot            # only saves a shot if screen-sharing AND the frame changed
 
 # ...then posts context straight into the live meeting chat (visible to all):
 teams post --live "Context: OpTel is Adobe's Observability & Telemetry platform."
 
-# Tear down (also deletes the copilot webhook):
+# Tear down (stops sending to the ntfy URL):
 teams transcribe stop
 ```
 
-- **`--scoop <name>`** (on `start`): creates a SLICC webhook routed to that scoop and injects its URL into the in-page collector. Each finalized caption phrase is `POST`ed to the webhook (fire-and-forget, `no-cors`) → arrives as a lick to the scoop. No cron, no polling. The webhook id is tracked in `/shared/.teams-transcribe-state.json` and removed on `stop`.
-- **`--snapshot`** (a flag, composes with any subcommand — typically `flush`): if a screen share is active, captures **only the shared-screen preview** — it draws the largest shared `<video>` element to an in-page canvas and exports a PNG — and keeps it only if the shared content changed (a pixel-payload hash), into `--shots-dir` (default `/shared/copilot-shots/`). Scoping to the video means the dedupe ignores unrelated window churn (captions, chat, roster, clock). Falls back to a full-window screenshot if no capturable video is present.
+- **`follow --command '<cmd>'`**: runs `sh -c '<cmd>'` once per finalized phrase, in
+  order, with `$TEAMS_TEXT`, `$TEAMS_AUTHOR`, `$TEAMS_TS` and `$TEAMS_RAW` (JSON). The
+  text is what someone said: use it quoted and never evaluate it.
+- **`--ntfy=<url>`** (on `start`): the in-page collector `POST`s each finalized phrase
+  as JSON to that https URL (fire-and-forget, `no-cors`). Use an `ntfy.sliccy.ai` hook
+  URL (`https://ntfy.sliccy.ai/hook/<id>`, unguessable; create it with a token that has
+  the `hooks` scope), since the gateway's topics need a token to publish. The captions
+  leave the meeting for that URL, so use a hook only you can read. The URL is kept in
+  `~/.local/state/teams/transcribe.json` until `stop`; `--scoop` (SLICC 6) is refused.
+- **`--snapshot`** (a flag, composes with any subcommand — typically `flush`): if a screen share is active, captures **only the shared-screen preview** — it draws the largest shared `<video>` element to an in-page canvas and exports a PNG — and keeps it only if the shared content changed (a pixel-payload hash), into `--shots-dir` (default `~/.local/state/teams/copilot-shots/`). Scoping to the video means the dedupe ignores unrelated window churn (captions, chat, roster, clock). Falls back to a full-window screenshot if no capturable video is present.
 - **`teams post --live <message>`**: posts into the **currently active meeting's chat**, visible to all participants. Uses **real CDP input** via `playwright-cli` (resolve the compose box + Send button from the accessibility snapshot, click → type → click Send) — Teams' CKEditor ignores in-page DOM edits, so genuine keystrokes are required.
 
-Typical wiring: `teams transcribe start --scoop meeting-copilot` → the `meeting-copilot` scoop receives a lick per phrase, calls `teams transcribe flush --snapshot` for the latest text + a shared-screen frame, decides whether additional context is warranted, and if so calls `teams post --live "..."`.
-
-> **Validated live** against a real meeting (Jul 2026): webhook→lick delivery, canvas
-> snapshot + content-scoped dedupe, and `post --live` all confirmed working. Selectors
-> (caption list, meeting-chat compose/Send, share `<video>`) may still need updates if a
-> future Teams build changes its DOM.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| `No Teams tab found` | First check if a tab is already open: `playwright-cli tab-list`. If no Teams URL appears, open one (`open https://teams.microsoft.com`) and sign in, then retry. |
-| `No Graph access token in Teams localStorage` | Modern Teams (v2) stores tokens in `localStorage`, not `sessionStorage`. If extraction fails, reload the Teams tab and wait for it to fully render before retrying. |
-| `401 Unauthorized` | Teams session expired. Refresh the Teams tab in the browser; the next command will pick up the new token automatically. |
-| `403 Forbidden on message reads` | You're hitting the v1.0 `/messages` endpoint, which requires `ChannelMessage.Read.All` (a scope the delegated browser token lacks). The script already uses the beta endpoint; if you see this, confirm you're on an up-to-date version of `teams.jsh`. |
+| `Could not obtain a Teams sign-in` | Sign in at https://teams.cloud.microsoft, then retry. Deleting `~/.local/state/teams/tab.json` makes teams open a fresh tab of its own. |
+| `No Teams meeting tab found` | Join the meeting in a Teams tab, or pass `--tab=<targetId>` (`playwright-cli tab-list`). |
+| `401 Unauthorized` | The Teams session expired. Sign in again; delete `~/.local/state/teams/tab.json` so teams opens a fresh tab. |
 | `Team/channel not found` | Run `teams teams` or `teams channels <team>` to list the exact names/IDs available to the current token. |
 | Search API returns empty / 403 | `teams activity` auto-falls back to a channel scan (delegated tokens often lack the chatMessage search scope). For `teams search`, ensure the token has `Chat.Read` scope. |
-| `digest` or `activity` times out | Use `--max-teams=5` to limit the scan. The .jsh runner has a ~30s budget; large tenants need a smaller cap. |
+| `digest` or `activity` times out | Use `--max-teams=5` to limit the scan. |
 | `transcribe` says "No active meeting found" | You must be *in* a meeting (the meeting stage must be the active view in the Teams tab). Join/rejoin the call, then retry. |
 | `transcribe` can't find the caption toggle | Teams' menu labels/DOM can change. Turn on captions manually (More → Language and speech → Show live captions), then run `teams transcribe start` — the collector attaches to the existing caption panel. |
 | `transcribe status` shows captions rendering but 0 buffered | No one has spoken a full phrase yet, or the tab was reloaded (which clears the in-page buffer). Re-run `teams transcribe start` after a reload. |
