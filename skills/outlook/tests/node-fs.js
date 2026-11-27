@@ -113,6 +113,9 @@ export function nodeFs(files = {}) {
         vfs[b] = vfs[a];
         delete vfs[a];
       },
+      chmod: async (p) => {
+        if (!(p in vfs)) throw enoent('chmod', p);
+      },
     },
   };
 }

@@ -72,10 +72,15 @@ const LEGACY_TOKEN_PATH = '/shared/.outlook-token';
 // it OWA answers in UTC and an 11:30 CEST meeting prints as 09:30.
 const LEGACY_TZ_PATH = '/shared/.outlook-timezone';
 
+// The token cache holds a bearer token: 0600 in a 0700 directory, whatever the
+// umask, written through a rename so a reader never sees half a file.
 async function writeCache(file, data) {
   try {
-    await fs.promises.mkdir(path.dirname(file), { recursive: true });
-    await fs.promises.writeFile(file, data);
+    await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.${process.pid || 0}.tmp`;
+    await fs.promises.writeFile(tmp, data, { mode: 0o600 });
+    await fs.promises.chmod(tmp, 0o600);
+    await fs.promises.rename(tmp, file);
   } catch { /* cache is best-effort */ }
 }
 

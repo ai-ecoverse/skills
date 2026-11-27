@@ -5,41 +5,20 @@ bearer token extracted from the user's Teams browser session.
 
 ## Authentication
 
-The skill extracts the delegated access token from the MSAL cache in the
-Teams web client's **`localStorage`** (Teams v2, `teams.microsoft.com/v2/`).
-Older Teams versions that use `sessionStorage` are covered by a fallback.
+Teams v2 (`teams.cloud.microsoft`) encrypts its MSAL cache in `localStorage`
+(`{id, nonce, data}` blobs, no plaintext `secret`), so no token is read at rest.
 
-### MSAL token cache structure
-
-MSAL v2 stores tokens under composite keys of the form:
-
-```
-<homeAccountId>-<environment>-accesstoken-<clientId>-<realm>-<scopes>
-```
-
-Each value is JSON along the lines of:
-
-```json
-{
-  "credential_type": "AccessToken",
-  "secret": "<the actual bearer token>",
-  "home_account_id": "...",
-  "environment": "login.microsoftonline.com",
-  "client_id": "...",
-  "target": "openid profile User.Read ...",
-  "realm": "<tenant-id>",
-  "token_type": "Bearer",
-  "expires_on": "1713200000",
-  "extended_expires_on": "1713203600"
-}
-```
-
-The page-context fetch searches for keys containing both `accesstoken` and
-`graph.microsoft.com`, picks the entry with the highest `expiresOn` /
-`expires_on`, and uses the `secret` field as the bearer token. Substrate
-Search calls use the same lookup against `substrate.office.com`. All of this
-runs inside the Teams tab via `playwright-cli eval`; the token value never
-leaves the browser context.
+- A page-context fetch/XHR hook records the refresh token from each request the
+  Teams client sends to `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token`,
+  keyed by `client_id`. Teams uses several clients; the Teams web client
+  (`5e3ce6c0-2b1f-4285-8d4b-75ee78787346`) is preferred, and others fail with
+  `AADSTS70000` for Graph and Substrate scopes (seen 2026-11-27).
+- `__getToken(aud)` exchanges it in the page (`grant_type=refresh_token`,
+  `scope=https://<aud>/.default`) and keeps the rotated refresh token.
+- Teams sends those requests about 1–3 s after the page starts loading, and
+  SLICC 7's request capture excludes `login.microsoftonline.com`. So the first
+  call reloads teams' own background tab and installs the hook in the new
+  document at once (`reloadAndHook`).
 
 ### Required scopes
 

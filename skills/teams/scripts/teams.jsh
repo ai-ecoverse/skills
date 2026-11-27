@@ -1,5 +1,6 @@
-// teams.jsh — Microsoft Teams access via Graph + Substrate Search APIs
-// Auto-discovered as `teams` shell command in SLICC.
+#!/usr/bin/env jsh
+// teams.jsh — Microsoft Teams access via Graph + Substrate Search APIs.
+// The `teams` command: SLICC 7 and the host run it under jsh (package.json bin).
 //
 // Operates against the authenticated browser session on teams.microsoft.com via
 // page-context fetch through the sliccy:browser bridge. The user must be logged into
@@ -25,8 +26,9 @@ function escapeShellArg(value) {
 }
 
 
-const TEAMS_DOMAIN_PRIMARY = 'teams.microsoft.com';
-const TEAMS_DOMAIN_SECONDARY = 'teams.live.com';
+// Teams moved to teams.cloud.microsoft (2026); the older hosts still redirect there.
+const TEAMS_HOSTS = ['teams.cloud.microsoft', 'teams.microsoft.com', 'teams.live.com'];
+const TEAMS_URL = 'https://teams.cloud.microsoft/';
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const GRAPH_BETA = 'https://graph.microsoft.com/beta';
 // NOTE: Channel message reads must use GRAPH_BETA. The delegated token from the Teams
@@ -100,24 +102,17 @@ async function pooled(concurrency, fns) {
 // ---------------------------------------------------------------------------
 //
 // All API calls run inside the Teams tab via the sliccy:browser bridge, so the
-// origin is teams.microsoft.com and browser session state is available.
+// origin is the Teams host and browser session state is available.
 //
-// AUTH (issue #201): Teams v2 now stores every MSAL access token in
-// localStorage as an *encrypted* blob ({id, nonce, data}) with no plaintext
-// `.secret` field, so the old "read the token out of localStorage" approach no
-// longer works — every Graph subcommand failed with NOT_AUTHENTICATED even
-// against a genuinely signed-in tab. Instead we capture the multi-resource MSAL
-// *refresh token* that the Teams client posts to the AAD token endpoint
-// (POST .../oauth2/v2.0/token) and replay it in-page for the Graph (or
-// Substrate) scope; AAD returns an audience-scoped access token because the
-// refresh token is multi-resource (FOCI). Capture is two-pronged, and the
-// refresh + access tokens are minted and consumed entirely inside the page:
-//   1. an idempotent page-context fetch/XHR hook records the refresh token from
-//      any live token request into a window global (survives across evals);
-//   2. a one-time bootstrap seed reads a recent token request out of the CDP
-//      request buffer (playwright-cli requests) and injects it into the page
-//      when the hook has not caught one yet. Token rotation then keeps the
-//      in-page refresh token fresh for the rest of the tab session.
+// AUTH (issue #201): Teams v2 stores every MSAL token in localStorage as an
+// *encrypted* blob, so it can't be read at rest. Instead an idempotent
+// page-context fetch/XHR hook records the multi-resource (FOCI) refresh token
+// the Teams client posts to the AAD token endpoint (POST …/oauth2/v2.0/token),
+// one per client id, and __getToken replays it in-page for the Graph or
+// Substrate scope. Teams makes those requests while the page loads, so the
+// first call reloads teams' own background tab and installs the hook in the new
+// document right away (reloadAndHook). Refresh and access tokens are minted and
+// used inside the page; only API responses leave it.
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -127,6 +122,7 @@ function sleep(ms) {
 // hook plus __getToken(audience), which mints/caches a bearer token for the
 // requested audience by replaying the captured refresh token in-page.
 const AUTH_PREAMBLE = `
+  const __TEAMS_WEB_CLIENT = '5e3ce6c0-2b1f-4285-8d4b-75ee78787346';
   const __AUD_SCOPE = {
     'graph.microsoft.com': 'https://graph.microsoft.com/.default',
     'substrate.office.com': 'https://substrate.office.com/.default'
@@ -138,8 +134,14 @@ const AUTH_PREAMBLE = `
         if (!bodyStr || String(u).indexOf('/oauth2/v2.0/token') === -1) return;
         const p = new URLSearchParams(bodyStr);
         const rt = p.get('refresh_token');
-        if (!rt) return;
-        window.__sliccTeamsAuth = { rt: rt, clientId: p.get('client_id'), authority: String(u).split('/oauth2/')[0] };
+        const cid = p.get('client_id');
+        if (!rt || !cid) return;
+        // Teams signs in with more than one client (the Teams web client, and others
+        // for embedded apps). Keep one sign-in per client and prefer the Teams web
+        // client: the last token request is often another client's.
+        const all = window.__sliccTeamsAuthAll = window.__sliccTeamsAuthAll || {};
+        all[cid] = { rt: rt, clientId: cid, authority: String(u).split('/oauth2/')[0] };
+        window.__sliccTeamsAuth = all[__TEAMS_WEB_CLIENT] || all[cid];
       } catch (e) {}
     };
     const __of = window.fetch;
@@ -164,34 +166,108 @@ const AUTH_PREAMBLE = `
   async function __getToken(a) {
     const c = window.__sliccTok[a];
     if (c && c.exp > (Date.now() / 1000) + 60) return c.token;
-    if (!(window.__sliccTeamsAuth && window.__sliccTeamsAuth.rt)) return null;
-    const au = window.__sliccTeamsAuth;
+    const all = window.__sliccTeamsAuthAll || {};
+    const cands = Object.values(all).sort((x, y) => (y.clientId === __TEAMS_WEB_CLIENT) - (x.clientId === __TEAMS_WEB_CLIENT));
+    if (!cands.length && window.__sliccTeamsAuth && window.__sliccTeamsAuth.rt) cands.push(window.__sliccTeamsAuth);
+    if (!cands.length) return null;
     const scope = __AUD_SCOPE[a] || ('https://' + a + '/.default');
-    const bd = new URLSearchParams({ client_id: au.clientId, grant_type: 'refresh_token', refresh_token: au.rt, scope: scope, client_info: '1' });
-    let tj;
-    try {
-      const tr = await fetch(au.authority + '/oauth2/v2.0/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: bd.toString() });
-      tj = await tr.json();
-    } catch (e) { return null; }
-    if (!tj || !tj.access_token) return null;
-    if (tj.refresh_token) window.__sliccTeamsAuth.rt = tj.refresh_token;
-    let exp = Math.floor(Date.now() / 1000) + (tj.expires_in || 3600);
-    try { exp = JSON.parse(atob(tj.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp || exp; } catch (e) {}
-    window.__sliccTok[a] = { token: tj.access_token, exp: exp };
-    return tj.access_token;
+    for (const au of cands) {
+      const bd = new URLSearchParams({ client_id: au.clientId, grant_type: 'refresh_token', refresh_token: au.rt, scope: scope, client_info: '1' });
+      let tj;
+      try {
+        const tr = await fetch(au.authority + '/oauth2/v2.0/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: bd.toString() });
+        tj = await tr.json();
+      } catch (e) { continue; }
+      if (!tj || !tj.access_token) continue;
+      if (tj.refresh_token) au.rt = tj.refresh_token; // rotated
+      let exp = Math.floor(Date.now() / 1000) + (tj.expires_in || 3600);
+      try { exp = JSON.parse(atob(tj.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp || exp; } catch (e) {}
+      window.__sliccTok[a] = { token: tj.access_token, exp: exp };
+      return tj.access_token;
+    }
+    return null;
   }
 `;
 
 let _tabId = null;
 
+// Per-user state (SLICC 7 and the host): $TEAMS_STATE_DIR, $XDG_STATE_HOME/teams
+// or ~/.local/state/teams. SLICC 6 kept files in /shared.
+function stateDir(env) {
+  if (env.TEAMS_STATE_DIR) return env.TEAMS_STATE_DIR;
+  if (env.XDG_STATE_HOME) return `${env.XDG_STATE_HOME}/teams`;
+  const home = env.HOME || require('os').homedir();
+  return `${home}/.local/state/teams`;
+}
+const STATE_DIR = stateDir(process.env || {});
+
+function _readState(name) {
+  try { return JSON.parse(require('fs').readFileSync(`${STATE_DIR}/${name}`, 'utf8')); } catch (e) { return {}; }
+}
+function _writeState(name, value) {
+  try {
+    const fs = require('fs');
+    fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(`${STATE_DIR}/${name}`, JSON.stringify(value, null, 2), { mode: 0o600 });
+  } catch (e) { /* state is best-effort */ }
+}
+
+function isTeamsHost(host) {
+  return TEAMS_HOSTS.includes(String(host || ''));
+}
+
+// The tab teams works in. Getting a sign-in means reloading the tab (see
+// reloadAndHook), so teams uses a background tab of its own and never reloads
+// one of the user's: --tab=<targetId> if given, else the tab it opened before
+// (its id is kept in STATE_DIR/tab.json), else a new one on TEAMS_URL.
 async function findTeamsTab() {
-  for (const domain of [TEAMS_DOMAIN_PRIMARY, TEAMS_DOMAIN_SECONDARY]) {
-    const tab = await browser.findTab({ domain });
-    if (tab) return tab;
+  if (typeof flags.tab === 'string' && flags.tab) return { targetId: flags.tab };
+  const saved = _readState('tab.json');
+  if (saved.targetId) {
+    try {
+      const host = await browser.eval({ targetId: saved.targetId }, '(() => location.host)()');
+      if (isTeamsHost(host)) return { targetId: saved.targetId };
+    } catch (e) { /* gone */ }
   }
-  die(
-    'No Teams tab found. Open Teams first:\n  open https://teams.microsoft.com\nWait for it to load and sign in, then retry.'
-  );
+  let tab;
+  try {
+    // A matchUrl no tab has, so ensureTab always opens a new background tab.
+    tab = await browser.ensureTab(TEAMS_URL, { matchUrl: /^slicc-teams-never-matches$/ });
+  } catch (e) {
+    die(`Could not open a Teams tab (${e && e.message ? e.message : e}). Is the browser connected?`);
+  }
+  const targetId = _targetId(tab);
+  for (let i = 0; i < 60; i++) {
+    let host = '';
+    try { host = await browser.eval({ targetId }, '(() => location.host)()'); } catch (e) {}
+    if (isTeamsHost(host)) {
+      _writeState('tab.json', { targetId });
+      return { targetId };
+    }
+    if (/login\.microsoftonline|login\.live/.test(String(host))) {
+      die(`The Teams tab is asking you to sign in. Sign in to ${TEAMS_URL} in the browser, then retry.`);
+    }
+    await sleep(500);
+  }
+  die(`Teams did not load in its tab. Open ${TEAMS_URL}, sign in, then retry.`);
+}
+
+// Live captions and the in-call chat are in the user's own meeting tab, and
+// they need no token, so these commands use it as it is and never reload it:
+// --tab=<targetId>, else the user's Teams tab whose title names a meeting or a
+// call, else the only Teams tab open.
+async function findMeetingTab() {
+  if (typeof flags.tab === 'string' && flags.tab) return { targetId: flags.tab };
+  const own = _readState('tab.json').targetId;
+  const tabs = [];
+  for (const host of TEAMS_HOSTS) {
+    const re = new RegExp(`^https://${host.replace(/\./g, '\\.')}/`);
+    const t = await browser.findTab({ urlMatch: re });
+    if (t && _targetId(t) !== own) tabs.push(t);
+  }
+  if (!tabs.length) die(`No Teams meeting tab found. Join the meeting in ${TEAMS_URL}, or pass --tab=<targetId>.`);
+  const meeting = tabs.find((t) => /meeting|call|besprechung|anruf/i.test(String(t.title || '')));
+  return meeting || tabs[0];
 }
 
 async function ensureTab() {
@@ -205,53 +281,28 @@ function _targetId(tab) {
   return (tab && tab.targetId) ? tab.targetId : String(tab);
 }
 
-// Extract a urlencoded form-field value from a request body string.
-function _formField(body, name) {
-  for (const part of String(body).split('&')) {
-    if (part.startsWith(name + '=')) return part.slice(name.length + 1);
+// Bootstrap (SLICC 7): the page hook in AUTH_PREAMBLE only sees token requests
+// made after it is installed, and Teams makes them while the page loads (about
+// 1–3 s in). SLICC 7's request capture leaves login.microsoftonline.com out, so
+// the old CDP request-buffer seed has nothing to read. Instead, reload the tab
+// and install the hook in the new document right away, then wait for the first
+// token request. The refresh token stays in the page.
+async function reloadAndHook(tab) {
+  try { await browser.eval(tab, "(() => { window.__sliccTeamsOld = 1; location.reload(); return 'ok'; })()"); } catch (e) {}
+  const install = `(() => { if (window.__sliccTeamsOld) return 'old'; ${AUTH_PREAMBLE}; return 'hooked'; })()`;
+  let hooked = false;
+  for (let i = 0; i < 100 && !hooked; i++) {
+    try { hooked = (await browser.eval(tab, install)) === 'hooked'; } catch (e) { /* navigating */ }
+    if (!hooked) await sleep(150);
   }
-  return null;
-}
-
-// Bootstrap seed: read a refresh token from the CDP request buffer and inject it
-// into the page as window.__sliccTeamsAuth. Returns true on success. The refresh
-// token is passed straight into a page eval (never printed, never written to
-// disk) where it is decoded and stored in a page global.
-async function seedFromBuffer(tab) {
-  const tid = _targetId(tab);
-  const r = await exec(`playwright-cli requests --filter="oauth2/v2.0/token" --tab=${escapeShellArg(tid)}`);
-  if (r.exitCode !== 0) return false;
-  const lines = r.stdout
-    .split('\n')
-    .filter((l) => /oauth2\/v2\.0\/token/.test(l) && /→\s*200/.test(l));
-  if (lines.length === 0) return false;
-  const last = lines[lines.length - 1];
-  const idx = last.trim().split(/\s+/)[0];
-  const authMatch = last.match(/https:\/\/[^/]+\/[0-9a-fA-F-]{36}/);
-  const authority = authMatch ? authMatch[0] : null;
-  if (!authority || !/^\d+$/.test(idx)) return false;
-  const b = await exec(`playwright-cli request-body ${escapeShellArg(idx)} --tab=${escapeShellArg(tid)}`);
-  if (b.exitCode !== 0) return false;
-  const rt = _formField(b.stdout, 'refresh_token');
-  const cid = _formField(b.stdout, 'client_id');
-  if (!rt || !cid) return false;
-  // rt is percent-encoded in the form body; decode it in-page.
-  const seedJs =
-    `window.__sliccTeamsAuth = { rt: decodeURIComponent(${JSON.stringify(rt)}), clientId: ${JSON.stringify(cid)}, authority: ${JSON.stringify(authority)} }; 'ok';`;
-  try {
-    await browser.eval(tab, seedJs);
-    return true;
-  } catch (e) {
-    return false;
+  if (!hooked) return false;
+  for (let i = 0; i < 40; i++) {
+    let have = false;
+    try { have = await browser.eval(tab, "(() => !!(window.__sliccTeamsAuthAll && window.__sliccTeamsAuthAll['5e3ce6c0-2b1f-4285-8d4b-75ee78787346']))()"); } catch (e) {}
+    if (have === true || have === 'true') return true;
+    await sleep(500);
   }
-}
-
-// Force the Teams client to (re)issue a token request so seedFromBuffer can find
-// one in the CDP buffer. A fresh page load makes MSAL re-acquire tokens it does
-// not have cached.
-async function reloadAndWait(tab) {
-  try { await browser.eval(tab, "location.reload(); 'ok'"); } catch (e) {}
-  await sleep(12000);
+  return false;
 }
 
 // Run the API call in the page. Returns { status, ok, data } or { error }.
@@ -303,18 +354,12 @@ async function teamsFetch(method, url, body, audience) {
   const aud = audience || GRAPH_AUDIENCE;
   let parsed = await _runFetchEval(tab, method, url, body, aud);
   if (parsed.error === 'NEED_RT') {
-    // The page hook has not captured a refresh token yet. Seed one from the CDP
-    // request buffer; if the buffer is empty, force a token request via reload.
-    let seeded = await seedFromBuffer(tab);
-    if (!seeded) {
-      await reloadAndWait(tab);
-      seeded = await seedFromBuffer(tab);
-    }
-    if (!seeded) {
+    // The page hook has not captured a refresh token yet: reload the tab once
+    // and catch the token requests Teams makes while it loads.
+    if (!(await reloadAndHook(tab))) {
       die(
-        'Could not obtain a Teams refresh token. Make sure Teams is fully loaded ' +
-        'and signed in at https://teams.microsoft.com, then retry. If it persists, ' +
-        'refresh the Teams tab.'
+        `Could not obtain a Teams sign-in from the tab. Make sure Teams is signed in at ${TEAMS_URL} ` +
+        'and finishes loading, then retry.'
       );
     }
     parsed = await _runFetchEval(tab, method, url, body, aud);
@@ -556,7 +601,7 @@ async function cmdPost() {
     // single quoted arg) or leave it in positional; combine both to be safe.
     const message = [(typeof flags.live === 'string' ? flags.live : ''), ...positional].join(' ').trim();
     if (!message) die('Usage: teams post --live <message>   (posts to the active meeting chat)');
-    const tab = await findTeamsTab();
+    const tab = await findMeetingTab();
     const res = await postToMeetingChat(tab, message);
     if (res === 'no-meeting-chat') {
       die('Could not open the meeting\'s in-call chat ("Meeting chat" pane). Make sure you are in the meeting (its "Chat" control must be available) and retry.');
@@ -1307,7 +1352,7 @@ const CAP_COLLECTOR_JS = `
       window.__sliccCapInstalled = true;
       window.__sliccCaps = [];
       // One buffer entry per caption-text ELEMENT; SUPERSEDE its text as that
-      // utterance grows. Deliver each utterance to the webhook exactly once, when
+      // utterance grows. Deliver each utterance to the ntfy URL exactly once, when
       // it finalizes (no longer the last element) or after a debounce pause.
       window.__capMeta = new WeakMap(); // caption span -> { idx, text, fired }
       const fire = (idx) => {
@@ -1434,36 +1479,55 @@ async function enableLiveCaptions(tab) {
   return 'clicked-unconfirmed';
 }
 
-// --- Copilot mode helpers: webhook wiring, snapshots, meeting-chat posting ---
+// --- Copilot mode helpers: ntfy wiring, snapshots, meeting-chat posting ---
+//
+// SLICC 6 created a webhook per scoop with its webhook command. SLICC 7 has none:
+// its event transport is ntfy (the gateway at ntfy.sliccy.ai). With
+// --ntfy=<url>, the in-page collector POSTs each finalized phrase as JSON to that
+// URL: an ntfy.sliccy.ai hook URL (https://ntfy.sliccy.ai/hook/<id>), or a topic
+// URL that accepts anonymous publishes. A subscriber turns them into work:
+//   ntfy sub <topic> 'agent send cone --lick=webhook --source teams "$NTFY_RAW"'
+// `teams transcribe follow --command '<cmd>'` does the same locally, no network.
 
-const TRANSCRIBE_STATE = '/shared/.teams-transcribe-state.json';
+const TRANSCRIBE_STATE = 'transcribe.json';
+const DEFAULT_SHOTS_DIR = `${STATE_DIR}/copilot-shots`;
 
-function _readTranscribeState() {
-  try { const fs = require('fs'); return JSON.parse(fs.readFileSync(TRANSCRIBE_STATE, 'utf8')); } catch (e) { return {}; }
-}
-function _writeTranscribeState(st) {
-  try { const fs = require('fs'); fs.writeFileSync(TRANSCRIBE_STATE, JSON.stringify(st, null, 2)); } catch (e) {}
-}
+function _readTranscribeState() { return _readState(TRANSCRIBE_STATE); }
+function _writeTranscribeState(st) { _writeState(TRANSCRIBE_STATE, st); }
 
-// Create a SLICC webhook routed to <scoop>. Returns { id, url } or null.
-async function createTranscribeWebhook(scoop) {
-  _safeName(scoop, '--scoop'); // guard against shell injection via the exec bridge
-  const r = await exec(`webhook create --scoop ${escapeShellArg(scoop)} --name teams-transcribe`);
-  if (r.exitCode !== 0) return null;
-  const idM = (r.stdout || '').match(/ID:\s*(\S+)/);
-  const urlM = (r.stdout || '').match(/URL:\s*(\S+)/);
-  if (!idM || !urlM) return null;
-  return { id: idM[1], url: urlM[1] };
-}
-
-async function deleteWebhook(id) {
-  if (!id) return;
-  try { await exec(`webhook delete ${escapeShellArg(id)}`); } catch (e) {}
+// Captions leave the meeting only for an https URL the caller named.
+function ntfyUrl(v) {
+  let u;
+  try { u = new URL(String(v)); } catch (e) { return null; }
+  if (u.protocol !== 'https:' || u.username || u.password) return null;
+  return u.toString();
 }
 
-// Point the in-page collector at a webhook URL (fired per finalized phrase).
+// Point the in-page collector at a URL (POSTed per finalized phrase), or '' to stop.
 async function setCollectorWebhook(tab, url) {
   await browser.evalAsync(tab, `(() => { window.__sliccCapWebhook = ${JSON.stringify(url || '')}; return 'ok'; })()`);
+}
+
+// The environment a follow --command gets for one phrase. The text is the
+// speaker's: a command must use it quoted ("$TEAMS_TEXT") and never evaluate it.
+function phraseEnv(c) {
+  return {
+    TEAMS_TEXT: String((c && c.text) || ''),
+    TEAMS_AUTHOR: String((c && c.author) || ''),
+    TEAMS_TS: c && c.ts ? new Date(c.ts).toISOString() : '',
+    TEAMS_RAW: JSON.stringify(c || {}),
+  };
+}
+
+// Run one callback as `sh -c '<command>'`, one at a time, with the phrase in the
+// environment. Resolves with its exit status.
+function runPhraseCommand(command, c) {
+  const { spawn } = require('child_process');
+  return new Promise((resolve) => {
+    const child = spawn('sh', ['-c', command], { stdio: 'inherit', env: { ...process.env, ...phraseEnv(c) } });
+    child.on('error', (e) => { console.error(`teams: could not run the command: ${e.message}`); resolve(127); });
+    child.on('close', (code) => resolve(code === null ? 1 : code));
+  });
 }
 
 // Guards for values interpolated into sliccy:exec shell commands (the exec bridge
@@ -1502,7 +1566,7 @@ async function isScreenSharing(tab) {
 async function takeSnapshot(tab, shotsDir) {
   const fs = require('fs');
   const tid = _targetId(tab);
-  const dir = _safePath(shotsDir || '/shared/copilot-shots', '--shots-dir'); // guard exec interpolation
+  const dir = _safePath(shotsDir || DEFAULT_SHOTS_DIR, '--shots-dir'); // guard exec interpolation
   const ts = Date.now();
 
   // Capture ONLY the share-PREVIEW node: draw the largest shared-screen <video>
@@ -1625,7 +1689,7 @@ async function cmdTranscribe() {
   const sub = (positional[0] || 'start').toLowerCase();
   const outFile = flags.out || flags.o || 'teams-transcript.md';
   const idxFile = outFile + '.idx';
-  const tab = await findTeamsTab(); // dies if no Teams tab
+  const tab = await findMeetingTab(); // the user's meeting tab; never reloaded
 
   async function readCollector() {
     let raw = await browser.evalAsync(tab, CAP_COLLECTOR_JS);
@@ -1672,36 +1736,23 @@ async function cmdTranscribe() {
         console.log(`Could not fully enable captions (${status}). Turn on "More (...) -> Language and speech -> Show live captions" manually, then run: teams transcribe start`);
       }
 
-      // Copilot mode: --scoop <name> wires each finalized phrase to a webhook
-      // that delivers a lick to that scoop (event-driven, no polling).
+      // Copilot mode: --ntfy=<url> POSTs each finalized phrase to an ntfy URL.
       const prev = _readTranscribeState();
-      const state = { outFile, shotsDir: _safePath(flags['shots-dir'] || '/shared/copilot-shots', '--shots-dir') };
+      const state = { outFile, shotsDir: _safePath(flags['shots-dir'] || DEFAULT_SHOTS_DIR, '--shots-dir') };
       if (flags.scoop) {
-        _safeName(flags.scoop, '--scoop');
-        // Replace any prior webhook only once the new one is installed, so a
-        // failed create doesn't orphan the old one.
-        const wh = await createTranscribeWebhook(flags.scoop);
-        if (!wh) {
-          // Keep the prior webhook intact (carry it forward) rather than dropping it.
-          if (prev.webhookId) { state.webhookId = prev.webhookId; state.webhookUrl = prev.webhookUrl; state.scoop = prev.scoop; }
-          console.log(`WARNING: could not create webhook for scoop "${flags.scoop}" — phrases are still captured, but no NEW licks are wired.`);
-        } else {
-          if (prev.webhookId && prev.webhookId !== wh.id) await deleteWebhook(prev.webhookId);
-          await setCollectorWebhook(tab, wh.url);
-          state.webhookId = wh.id;
-          state.webhookUrl = wh.url;
-          state.scoop = flags.scoop;
-          console.log(`Copilot mode: each finalized phrase now fires a lick to scoop "${flags.scoop}" (webhook ${wh.id}).`);
-        }
-      } else if (prev.webhookId) {
-        // Plain restart without --scoop: PRESERVE the existing copilot webhook
-        // (carry its id/url forward so `stop` still cleans it up) and re-arm the
-        // in-page collector to it. Prevents an orphaned webhook / cross-meeting leak.
-        state.webhookId = prev.webhookId;
-        state.webhookUrl = prev.webhookUrl;
-        state.scoop = prev.scoop;
-        if (prev.webhookUrl) await setCollectorWebhook(tab, prev.webhookUrl);
-        console.log(`Copilot mode preserved: still firing to scoop "${prev.scoop}" (webhook ${prev.webhookId}). Run 'teams transcribe stop' to remove it.`);
+        die("--scoop used SLICC 6's webhook command, which SLICC 7 doesn't have. Use --ntfy=<url> (an ntfy.sliccy.ai hook) with an `ntfy sub` subscriber, or `teams transcribe follow --command '<cmd>'`.");
+      }
+      if (flags.ntfy !== undefined && flags.ntfy !== false) {
+        const url = ntfyUrl(flags.ntfy);
+        if (!url) die('--ntfy needs an https URL, e.g. --ntfy=https://ntfy.sliccy.ai/hook/<id>');
+        await setCollectorWebhook(tab, url);
+        state.ntfyUrl = url;
+        console.log(`Copilot mode: each finalized phrase is POSTed to ${url}.`);
+      } else if (prev.ntfyUrl) {
+        // Plain restart: keep sending where the previous start sent, until stop.
+        state.ntfyUrl = prev.ntfyUrl;
+        await setCollectorWebhook(tab, prev.ntfyUrl);
+        console.log(`Copilot mode kept: still POSTing to ${prev.ntfyUrl}. Run 'teams transcribe stop' to end it.`);
       }
       _writeTranscribeState(state);
 
@@ -1733,12 +1784,8 @@ async function cmdTranscribe() {
       const { buffer } = await readCollector();
       const fresh = flushToFile(buffer);
       await browser.evalAsync(tab, `(() => { if (window.__sliccCapTimer) clearInterval(window.__sliccCapTimer); if (window.__capTrailTimer) clearTimeout(window.__capTrailTimer); if (window.__sliccCapObserver) { try { window.__sliccCapObserver.disconnect(); } catch (e) {} } window.__sliccCapObserver = null; window.__capList = null; window.__sliccCapInstalled = false; window.__sliccCapWebhook = null; return 'stopped'; })()`);
-      // Tear down copilot webhook if one was wired.
       const st = _readTranscribeState();
-      if (st.webhookId) {
-        await deleteWebhook(st.webhookId);
-        console.log(`Copilot webhook ${st.webhookId} removed.`);
-      }
+      if (st.ntfyUrl) console.log(`Copilot mode ended: no more phrases go to ${st.ntfyUrl}.`);
       _writeTranscribeState({});
       console.log(`Stopped. Flushed final ${fresh.length} phrase(s). Total captured: ${buffer.length}. -> ${outFile}`);
       console.log('(Live captions remain toggled on in the meeting UI — turn them off manually if you want.)');
@@ -1761,7 +1808,8 @@ async function cmdTranscribe() {
         const fresh = flushToFile(buffer);
         for (const c of fresh) {
           const t = new Date(c.ts).toISOString().slice(11, 19);
-          console.log(`[${t}] ${c.author || '?'}: ${c.text}`);
+          if (typeof flags.command === 'string' && flags.command) await runPhraseCommand(flags.command, c);
+          else console.log(`[${t}] ${c.author || '?'}: ${c.text}`);
         }
         if (fresh.length) lastNew = Date.now();
         if (Date.now() - lastNew > idleStopMin * 60000) { console.log(`\nNo captions for ${idleStopMin} min — stopping.`); break; }
@@ -1777,10 +1825,10 @@ async function cmdTranscribe() {
 
   // --snapshot flag: composes with any subcommand (except follow, which loops).
   // Captures a deduped screenshot of the Teams window IF a screen share is active.
-  // The copilot scoop typically calls `teams transcribe flush --snapshot` per lick.
+  // A copilot agent typically calls `teams transcribe flush --snapshot` per phrase it gets.
   if (flags.snapshot && sub !== 'follow') {
     const st = _readTranscribeState();
-    const shotsDir = flags['shots-dir'] || st.shotsDir || '/shared/copilot-shots';
+    const shotsDir = flags['shots-dir'] || st.shotsDir || DEFAULT_SHOTS_DIR;
     const sharing = await isScreenSharing(tab);
     if (!sharing) {
       console.log('Snapshot: skipped (no screen share detected).');
@@ -2348,12 +2396,18 @@ Commands:
                                     monday-protocol inbox source: JSON array of unread/recent
                                     chat messages + channel mentions on stdout (logs on stderr)
   transcribe [start]                Turn on live captions in the active meeting and capture the transcript
-  transcribe start --scoop <name>   Copilot mode: fire a lick to <name> for each finalized phrase
+  transcribe start --ntfy=<url>     Copilot mode: POST each finalized phrase to an ntfy URL
+                                    (an https://ntfy.sliccy.ai/hook/<id>); subscribe with ntfy sub
   transcribe flush [--snapshot]     Append new phrases; --snapshot also grabs a deduped screen-share frame
   transcribe status                 Show whether captions render + buffered/live lines
   transcribe follow [--out=FILE]    Stream the transcript live and flush continuously (blocks)
-  transcribe stop [--out=FILE]      Final flush, remove copilot webhook, stop the collector
-    flags: --out=FILE  --scoop=NAME  --snapshot  --shots-dir=DIR  --interval=SEC (follow)
+  transcribe follow --command='<cmd>'  Run sh -c '<cmd>' per phrase, with $TEAMS_TEXT,
+                                    $TEAMS_AUTHOR, $TEAMS_TS and $TEAMS_RAW (use them quoted)
+  transcribe stop [--out=FILE]      Final flush, end copilot mode, stop the collector
+    flags: --out=FILE  --ntfy=URL  --snapshot  --shots-dir=DIR  --interval=SEC (follow)
+
+Teams uses a background tab of its own (opened on first use, kept in
+~/.local/state/teams/tab.json); --tab=<targetId> picks one. It never reloads yours.
 
 Aliases: messages/msgs → history, mentions → activity
 
