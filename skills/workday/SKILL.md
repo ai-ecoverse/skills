@@ -3,15 +3,14 @@ name: workday
 description: Workday org chart and people directory from the browser session. Find
   colleagues by name, look up a person's title, email, location and manager, show a
   management chain, team and direct reports, list a supervisory organization, resolve
-  names to ids in bulk (lookup), walk a whole org below a manager (tree), with a
-  per-tenant cache, and keep an idle signed-in Workday tab from being signed out
-  (keepalive). Use when the user asks who someone reports to, who is on a team, who
-  their peers are, who leads an org, what someone's title or email is, wants to explore
-  the Workday org chart without clicking through myworkday.com, or keeps getting signed
-  out of Workday when idle. Triggers on Workday, myworkday.com, org chart, reporting
-  line, management chain, direct reports, skip-level, supervisory organization, "who
-  reports to", "who does X work for", Workday session timeout, keep Workday alive.
-  Reads only. Runs in SLICC, and on a host under jsh over Chrome DevTools (CDP).
+  names to ids in bulk (lookup), walk an org below a manager (tree), and keep an idle
+  signed-in Workday tab from being signed out (keepalive). Use when the user asks who
+  someone reports to, who is on a team, who leads an org, what someone's title or email
+  is, wants to explore the Workday org chart without clicking through myworkday.com, or
+  keeps getting signed out of Workday when idle. Triggers on Workday, myworkday.com,
+  org chart, reporting line, management chain, direct reports, skip-level, supervisory
+  organization, "who reports to", "who does X work for", Workday session timeout, keep
+  Workday alive. Reads only; runs in SLICC and on a host under jsh over CDP.
 allowed-tools: bash
 ---
 
