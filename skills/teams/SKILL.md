@@ -1,17 +1,17 @@
 ---
 name: teams
 description: >-
-  Interact with Microsoft Teams via the Graph API — read messages, post to channels,
-  search, read threads, look up users, view mentions/activity, and get channel info.
-  Also transcribe the meeting you're currently in by turning on live captions and
-  capturing them to a timestamped, speaker-attributed transcript file.
-  Supports all teams and channels the user has access to, with auth via the live browser
-  session. Use when the user wants to check Teams messages, post a Teams message, search
-  Teams channels, read a thread, get user info, view mentions, transcribe or caption a
-  live meeting, or feed Microsoft Teams items into the SLICC `monday` start-of-day
-  inbox digest (the monday aggregator skill — unrelated to the monday.com SaaS product).
-  Triggers on mentions of Teams, Microsoft Teams, channels, messages, threads, mentions,
-  activity, digest, transcribe, transcript, captions, or meeting notes.
+  Interact with Microsoft Teams through the Graph API: read Teams channel messages,
+  chats and DMs, post to Teams channels, search Teams, read threads, look up users,
+  see your Teams mentions and activity, and get channel info. Also transcribe the
+  Teams meeting you're in from its live captions into a timestamped, speaker-
+  attributed transcript, with a copilot mode that hands each phrase to an agent. Uses
+  the signed-in Teams browser session. Use when the user wants to check or post Teams
+  messages, search Teams, read a Teams thread or chat, look up a Teams user, see Teams
+  mentions, transcribe or caption a Teams meeting, or feed Teams items into the SLICC
+  `monday` inbox digest (the monday aggregator skill, not monday.com). Triggers on
+  Teams, Microsoft Teams, Teams chat, Teams DM, Teams channel, Teams meeting, meeting
+  transcript, live captions, or meeting notes.
 allowed-tools: bash
 ---
 
@@ -48,27 +48,14 @@ script never signs in for you.
 
 ## Authentication
 
-Teams v2 encrypts its MSAL token cache, so nothing is read from storage. A
-page-context hook records the refresh token the Teams client posts to the AAD
-token endpoint (one per client id, preferring the Teams web client) and replays
-it in the page for the Graph or Substrate scope. Teams makes those requests while
-the page loads, which is why the first call reloads teams' own tab and installs
-the hook in the new document at once. SLICC 7's request capture leaves
-`login.microsoftonline.com` out, so the SLICC 6 path that read the token request
-from the CDP request buffer is gone.
-
-If you see `Could not obtain a Teams sign-in`, make sure you're signed in at
-https://teams.cloud.microsoft, then retry; deleting `~/.local/state/teams/tab.json`
-makes teams open a fresh tab.
+Nothing to set up: the sign-in is taken from the Teams client inside the page
+and never leaves it. How, and why the first call reloads teams' own tab:
+`references/endpoints.md#authentication`.
 
 ## API Endpoint Note
 
-Channel message reads use the **beta** Graph endpoint
-(`https://graph.microsoft.com/beta/...`), not v1.0. The delegated token from
-the Teams browser session does not include `ChannelMessage.Read.All`, so the
-v1.0 messages endpoint returns 403. The beta endpoint works with the scopes
-the Teams session actually provides. Team listing, channel listing, user
-profile, and channel info calls use v1.0 as normal.
+Channel message reads use the **beta** Graph endpoint: the session token lacks
+`ChannelMessage.Read.All`, which v1.0 requires (403).
 
 ## Search Architecture
 
@@ -203,7 +190,7 @@ Scans up to `--max-teams` teams (default 10). Progress is printed to stderr.
 ### teams monday [--limit N] [--depth N] [--date Nd]
 
 `monday`-protocol inbox source (see the `monday` skill,
-`references/SOURCE_PROTOCOL.md`). Prints a **single JSON array** to stdout and
+its `SOURCE_PROTOCOL.md`). Prints a **single JSON array** to stdout and
 nothing else; all progress/warnings go to stderr and the command always exits
 `0` (an empty inbox is `[]`) — including when Teams itself is unavailable, e.g.
 no signed-in tab, so the aggregator degrades instead of failing. Intended to be
@@ -263,24 +250,8 @@ de-duplicated Markdown:
 **[15:04:48] Dragos Dascalita Haut:** And where are you taking this now?
 ```
 
-**How it works.** A `MutationObserver` on the caption virtual-list
-(`closed-caption-v2-virtual-list-content`) captures changes event-driven (no poll gaps).
-Each spoken utterance is its OWN `[data-tid="closed-caption-text"]` element whose text
-grows as it is recognized, then finalizes when the next utterance's element appears — so
-the collector keeps one buffer entry per element and **supersedes its text as it grows**,
-delivering each utterance to the ntfy URL exactly once (when it finalizes, or after a
-short debounce for the trailing one). The speaker name sits ~2 ancestors above the text
-span (`"Name\n<text>"`). The `window` buffer survives across evals, so you can `flush` on
-any cadence without losing lines; only a tab reload clears it.
-
-> **Why DOM (not the network):** verified on the wire — Teams live captions arrive over
-> the encrypted **WebRTC media channel** and materialize only in the client DOM; there is
-> **no WebSocket/HTTP source** to tap (a HAR + WS-frame capture during active captioning
-> showed zero caption traffic). Element-level DOM capture is therefore the complete and
-> correct approach. Validated live: a 20-utterance test captured and delivered 20/20.
->
-> **Common pitfall:** the virtual-list has a single wrapper child — iterate the
-> `closed-caption-text` elements, NOT `list.children`, or you'll see one merged blob.
+How the caption collector works, and why it reads the DOM:
+`references/endpoints.md#live-captions`.
 
 > **Accuracy caveat:** captions are Teams' own speech-to-text, so names and jargon can be
 > mangled (it renders "SLICC" as "Slick", "Concur" as "conqueror", etc.). Clean up in a
@@ -322,11 +293,6 @@ teams transcribe stop
 - **`--snapshot`** (a flag, composes with any subcommand — typically `flush`): if a screen share is active, captures **only the shared-screen preview** — it draws the largest shared `<video>` element to an in-page canvas and exports a PNG — and keeps it only if the shared content changed (a pixel-payload hash), into `--shots-dir` (default `~/.local/state/teams/copilot-shots/`). Scoping to the video means the dedupe ignores unrelated window churn (captions, chat, roster, clock). Falls back to a full-window screenshot if no capturable video is present.
 - **`teams post --live <message>`**: posts into the **currently active meeting's chat**, visible to all participants. Uses **real CDP input** via `playwright-cli` (resolve the compose box + Send button from the accessibility snapshot, click → type → click Send) — Teams' CKEditor ignores in-page DOM edits, so genuine keystrokes are required.
 
-> **Validated live** against a real meeting (Jul 2026, SLICC 6): phrase delivery, canvas
-> snapshot + content-scoped dedupe, and `post --live` all confirmed working. The SLICC 7
-> transport (`--ntfy`, `follow --command`) has not yet run in a live meeting. Selectors
-> (caption list, meeting-chat compose/Send, share `<video>`) may still need updates if a
-> future Teams build changes its DOM.
 
 ## Troubleshooting
 
@@ -335,7 +301,6 @@ teams transcribe stop
 | `Could not obtain a Teams sign-in` | Sign in at https://teams.cloud.microsoft, then retry. Deleting `~/.local/state/teams/tab.json` makes teams open a fresh tab of its own. |
 | `No Teams meeting tab found` | Join the meeting in a Teams tab, or pass `--tab=<targetId>` (`playwright-cli tab-list`). |
 | `401 Unauthorized` | The Teams session expired. Sign in again; delete `~/.local/state/teams/tab.json` so teams opens a fresh tab. |
-| `403 Forbidden on message reads` | You're hitting the v1.0 `/messages` endpoint, which requires `ChannelMessage.Read.All` (a scope the delegated browser token lacks). The script already uses the beta endpoint; if you see this, confirm you're on an up-to-date version of `teams.jsh`. |
 | `Team/channel not found` | Run `teams teams` or `teams channels <team>` to list the exact names/IDs available to the current token. |
 | Search API returns empty / 403 | `teams activity` auto-falls back to a channel scan (delegated tokens often lack the chatMessage search scope). For `teams search`, ensure the token has `Chat.Read` scope. |
 | `digest` or `activity` times out | Use `--max-teams=5` to limit the scan. |

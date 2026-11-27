@@ -251,3 +251,24 @@ It therefore uses the Teams chat service (IC3) that the web client itself uses:
 Tokens are minted and consumed inside the Teams tab, exactly like every other
 subcommand; nothing is persisted. If the activity feed is unavailable, `monday`
 falls back to the Graph beta channel scan used by `teams activity`.
+
+## Live captions
+
+**How it works.** A `MutationObserver` on the caption virtual-list
+(`closed-caption-v2-virtual-list-content`) captures changes event-driven (no poll gaps).
+Each spoken utterance is its OWN `[data-tid="closed-caption-text"]` element whose text
+grows as it is recognized, then finalizes when the next utterance's element appears — so
+the collector keeps one buffer entry per element and **supersedes its text as it grows**,
+delivering each utterance (to `--ntfy`, when set) exactly once (when it finalizes, or after a
+short debounce for the trailing one). The speaker name sits ~2 ancestors above the text
+span (`"Name\n<text>"`). The `window` buffer survives across evals, so you can `flush` on
+any cadence without losing lines; only a tab reload clears it.
+
+> **Why DOM (not the network):** verified on the wire — Teams live captions arrive over
+> the encrypted **WebRTC media channel** and materialize only in the client DOM; there is
+> **no WebSocket/HTTP source** to tap (a HAR + WS-frame capture during active captioning
+> showed zero caption traffic). Element-level DOM capture is therefore the complete and
+> correct approach. Validated live: a 20-utterance test captured and delivered 20/20.
+>
+> **Common pitfall:** the virtual-list has a single wrapper child — iterate the
+> `closed-caption-text` elements, NOT `list.children`, or you'll see one merged blob.
