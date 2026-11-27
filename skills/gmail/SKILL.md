@@ -59,9 +59,11 @@ A token is resolved in a fixed order, first match wins:
    jerk refreshes it. In SLICC 7 jerk keeps the grant in the vault and prints a
    placeholder that the vault fills in when the request goes to Google; natively
    it uses the OS keyring.
-3. **Legacy persisted skill config** — credentials stored by an earlier
-   `gmail login` (or `gmail login --from-file`). Still read, never written by
-   the jerk flow.
+3. **Persisted config** — credentials stored by an earlier `gmail login` (or
+   `gmail login --from-file`), in `~/.local/state/gmail/config.json` (or
+   `$GMAIL_STATE_DIR`, `$XDG_STATE_HOME/gmail`), 0600. A copy an older version
+   kept in the skill folder (`scripts/.config`) is still read and moves over on
+   the next save. Never written by the jerk flow.
 
 With none of them, every command exits 1 with a message that names
 `gmail login` and, when jerk isn't on `PATH`, `npm i -g @ai-ecoverse/slicc-jerk`.
