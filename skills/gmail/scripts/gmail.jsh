@@ -37,6 +37,7 @@
 const http = require('sliccy:http');
 const skill = require('sliccy:skill');
 const exec = require('sliccy:exec');
+const fs = require('fs');
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const GMAIL_WEB = 'https://mail.google.com/mail/u/0/#inbox';
@@ -115,7 +116,27 @@ const C = require('sliccy:color');
 let _accessToken = null;
 
 /**
- * Read the skill's persisted config.
+ * Where the persisted config lives. Under jsh (SLICC 7 and the host) it is a
+ * per-user file, $GMAIL_STATE_DIR, $XDG_STATE_HOME/gmail or
+ * ~/.local/state/gmail, `config.json`, 0600 in a 0700 directory: the skill
+ * folder is usually root's (/usr/share/skills, or a pnpm global link to it),
+ * and writing `scripts/.config` there failed with EACCES. SLICC 6 has no
+ * process.versions.jsh and keeps skill.config(). Same rule as slack's stateDir.
+ */
+function stateDir(env, jsh) {
+  if (!jsh) return null;
+  if (env.GMAIL_STATE_DIR) return env.GMAIL_STATE_DIR;
+  if (env.XDG_STATE_HOME) return `${env.XDG_STATE_HOME}/gmail`;
+  const home = env.HOME || require('os').homedir();
+  return `${home}/.local/state/gmail`;
+}
+
+const STATE_DIR = stateDir(process.env || {}, !!(process.versions && process.versions.jsh));
+
+/**
+ * Read the skill's persisted config: the per-user file, else (read-only) the
+ * legacy skill.config() from before it moved, so an existing sign-in keeps
+ * working and is copied over on the next save.
  *
  * GOTCHA (same one documented in gcloud.jsh): skill.config() returns a Promise,
  * which is always truthy — so `skill.config() || {}` never falls back, and
@@ -123,12 +144,30 @@ let _accessToken = null;
  * before the `|| {}`.
  */
 async function loadConfig() {
+  if (STATE_DIR) {
+    try {
+      return JSON.parse(await fs.promises.readFile(`${STATE_DIR}/config.json`, 'utf8')) || {};
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') throw err;
+    }
+    try { return (await skill.config()) || {}; } catch { return {}; }
+  }
   return (await skill.config()) || {};
+}
+
+async function writeConfig(cfg) {
+  if (!STATE_DIR) return skill.config(cfg);
+  await fs.promises.mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
+  const file = `${STATE_DIR}/config.json`;
+  const tmp = `${file}.${process.pid || 0}.${Date.now()}.tmp`;
+  await fs.promises.writeFile(tmp, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
+  await fs.promises.chmod(tmp, 0o600);
+  await fs.promises.rename(tmp, file);
 }
 
 async function saveConfig(updates) {
   const cur = await loadConfig();
-  await skill.config({ ...cur, ...updates });
+  await writeConfig({ ...cur, ...updates });
 }
 
 function envCredentials() {
@@ -500,7 +539,7 @@ async function importCredentialsFile(fromFile) {
     expires_at: Date.now() + (tokenData.expires_in || 3600) * 1000,
   });
   process.stdout.write(`${C.green('✓')} Credentials imported from ${fromFile}${email ? ` (${email})` : ''}\n`);
-  process.stdout.write(`  ${C.gray('Stored in skill config; access tokens auto-refresh.')}\n`);
+  process.stdout.write(`  ${C.gray(`Stored in ${STATE_DIR ? `${STATE_DIR}/config.json` : 'skill config'}; access tokens auto-refresh.`)}\n`);
 }
 
 async function cmdLogin() {
@@ -579,11 +618,27 @@ async function cmdLogout() {
       });
     } catch { /* best effort */ }
   }
-  await skill.config({
+  const cleared = {
     client_id: '', client_secret: '', refresh_token: '',
     access_token: '', expires_at: 0, account: '',
-  });
+  };
+  await writeConfig(cleared);
+  // A sign-in an older version left in the skill folder (skill.config()) is
+  // shadowed by the new file but would stay on disk, possibly readable by
+  // others. Clear it too where we can; a root-owned folder refuses (EACCES).
+  let legacyLeft = false;
+  if (STATE_DIR) {
+    try {
+      const legacy = (await skill.config()) || {};
+      if (legacy.refresh_token || legacy.access_token) await skill.config(cleared);
+    } catch {
+      legacyLeft = true;
+    }
+  }
   process.stdout.write(`${C.green('✓')} Persisted Gmail credentials cleared.\n`);
+  if (legacyLeft) {
+    process.stdout.write(`  ${C.gray('An older copy in the skill folder could not be cleared (no write access); delete its scripts/.config as its owner.')}\n`);
+  }
 }
 
 async function cmdMail() {
