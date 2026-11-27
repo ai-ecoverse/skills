@@ -4,8 +4,8 @@
 
 | Field | Limit |
 |-------|-------|
-| Lyrics | ~1,250 characters (slightly more in V5+) |
-| Style prompt | Up to ~1,000 characters (V5.5); 4–7 descriptors recommended for cleanest results |
+| Lyrics | 5,000 characters (`audio_create` limit) |
+| Style prompt | 1,000 characters; 4–7 descriptors recommended for cleanest results |
 
 ## Structure Tags
 
