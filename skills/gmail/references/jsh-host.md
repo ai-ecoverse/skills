@@ -37,7 +37,7 @@ then `slicc browsers --json`, a `DevToolsActivePort` file, and
   from a vault placeholder.
 - Persisted credentials live in `$GMAIL_STATE_DIR`, `$XDG_STATE_HOME/gmail` or
   `~/.local/state/gmail` (`config.json`, 0600, directory 0700), not in the skill
-  folder, which is often root's. A sign-in saved by an older version in
-  `scripts/.config` (`skill.config()`) is still read and moves to the new file on
+  folder, which is often root's. A sign-in an older version saved with
+  `skill.config()` (a `.config` file in the scripts folder) is still read and moves to the new file on
   the next save.
 - `gmail download` writes to the real file system, so `--out` is a host path.

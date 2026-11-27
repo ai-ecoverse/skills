@@ -2,11 +2,12 @@
 name: gmail
 description: >-
   Interact with Gmail — read inbox, search messages, view full message bodies,
-  send email, reply to threads, and produce aggregated inbox items for the monday
-  dispatcher. Signs in through jerk (`gmail login` runs `jerk gmail create`) or
-  uses GWS_* env vars. Triggers on requests involving Gmail, Google email,
-  inbox, sending mail, checking unread messages, signing in to Gmail, or monday
-  inbox aggregation that includes Gmail data.
+  list and download attachments, send email, reply to threads, and produce
+  aggregated inbox items for the monday dispatcher. Signs in through jerk
+  (`gmail login` runs `jerk gmail create`) or uses GWS_* env vars. Triggers on
+  requests involving Gmail, Google email, "check my email", inbox, email
+  attachments, sending mail, checking unread messages, signing in to Gmail, or
+  monday inbox aggregation that includes Gmail data.
 allowed-tools: bash
 ---
 
@@ -62,7 +63,7 @@ A token is resolved in a fixed order, first match wins:
 3. **Persisted config** — credentials stored by an earlier `gmail login` (or
    `gmail login --from-file`), in `~/.local/state/gmail/config.json` (or
    `$GMAIL_STATE_DIR`, `$XDG_STATE_HOME/gmail`), 0600. A copy an older version
-   kept in the skill folder (`scripts/.config`) is still read and moves over on
+   kept in the skill's own folder is still read and moves over on
    the next save. Never written by the jerk flow.
 
 With none of them, every command exits 1 with a message that names
