@@ -2442,7 +2442,8 @@ Commands:
     flags: --out=FILE  --ntfy=URL  --snapshot  --shots-dir=DIR  --interval=SEC (follow)
 
 Teams uses a background tab of its own (opened on first use, kept in
-~/.local/state/teams/tab.json); --tab=<targetId> picks one. It never reloads yours.
+~/.local/state/teams/tab.json) and never reloads yours on its own.
+--tab=<targetId> uses that tab instead; the first API call may reload it to sign in.
 
 Aliases: messages/msgs → history, mentions → activity
 

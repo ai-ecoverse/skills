@@ -40,8 +40,9 @@ script never signs in for you.
   `digest`, `monday`, …) run in a **background tab of their own**, opened on first
   use and kept in `~/.local/state/teams/tab.json` (or `$TEAMS_STATE_DIR`,
   `$XDG_STATE_HOME/teams`). The first call reloads that tab once to catch the
-  sign-in (below), so it takes a few seconds; later calls reuse it. Your own Teams
-  tabs are never reloaded. `--tab=<targetId>` picks a tab instead.
+  sign-in (below), so it takes a few seconds; later calls reuse it. teams never
+  reloads your own tabs on its own. `--tab=<targetId>` uses that tab instead, and the
+  first API call may reload it to sign in, so don't point it at a meeting you're in.
 - **Meeting commands** (`transcribe`, `post --live`) work in **your** meeting tab,
   which they read and click but never reload: `--tab=<targetId>`, else the Teams tab
   whose title names a meeting or call, else the first Teams tab.
