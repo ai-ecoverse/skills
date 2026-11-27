@@ -1,466 +1,98 @@
 ---
 name: suno
-description: Write song lyrics formatted for Suno AI V5.5 music generation and submit them via the `suno` CLI, which drives Suno through the user's own logged-in browser session on suno.com. Use when the user wants to create a song, write lyrics, compose music with AI, submit to Suno, list Suno personas, check Suno credits, or asks for help with Suno. Triggers on requests like "write me a song", "create lyrics about...", "help me with Suno", "compose a track", "song about...", "suno credits", "suno personas".
+description: Write song lyrics and style prompts for Suno and make the songs through Suno's own MCP server (api.suno.com/mcp), signed in as the user. Use when the user wants to write a song or lyrics, compose a track with AI, generate, cover, extend or mash up a Suno song, make stems or a sound effect, check Suno credits, browse their Suno library or playlists, ask how a song sounds (tempo, key, mood), or asks for help with Suno. Triggers on "write me a song", "song about…", "lyrics for…", "make this into a Suno track", "suno credits", "my Suno songs", "cover this song", "extend this song".
 allowed-tools: bash
 ---
 
-# Suno Songwriting Assistant
+# Suno
 
-Write lyrics formatted for Suno AI's Custom Mode with proper metatags, structure, and style prompts.
+Write the song here; make it through Suno's MCP server. Every Suno tool is named
+`mcp__Suno__<tool>` (in SLICC, call them from a codemode script; elsewhere, add
+`https://api.suno.com/mcp` as an MCP server). It signs in with the user's suno.com
+account by OAuth: in SLICC, under Settings › MCP servers. There is no CLI.
 
-## End-to-End Workflow
+## Workflow
 
-1. **Clarify** — ask about genre, mood, theme, and vocal preference if not provided
-2. **Draft lyrics** — use metatags, parameterized section headers, correct meter and rhyme
-3. **Write style prompt** — structured colon format or producer run-on sentence
-4. **Run prosody audit** — line-by-line syllable counts, rhyme scheme map, singability check
-5. **Suggest sliders** — Weirdness, Style Influence, Audio Influence values
-6. **Confirm before submitting** — show the user the final lyrics, style prompt, sliders, and target persona, then **wait for explicit user approval**. `suno generate` and UI submission consume paid Suno credits, so never submit on your own initiative
-7. **Submit** — only after explicit approval, via `suno` CLI (preferred) or UI automation fallback
-8. **Poll and iterate** — `suno poll <clip_id> --wait`, then refine weak sections with Song Editor
+1. **Ask** for genre, mood, theme and vocal if the user gave none.
+2. **Write** lyrics, a style prompt, and optionally a negative style and sliders (below).
+3. **Audit** the lyrics line by line (syllables, rhyme, stress on the beat) and fix them.
+4. **Show** the final lyrics, style, title and model. Generating spends the user's credits
+   (one `audio_create` call makes 2 songs): make it only once they've said yes, or when
+   they've already told you to go ahead.
+5. **Make** it: `audio_create`, then `audio_wait` with every id from `clip_ids`.
+6. **Check** it: `audio_listen` asks Suno's listener about a finished song (free, answer in
+   under a minute through `audio_listen_wait`). Report every song made, not only the first.
 
-## How Suno Actually Works
+## The tools you need most
 
-**Critical insight**: Suno maps text into a probabilistic style-mesh rather than reading prompts literally.
+| Task | Tool | Notes |
+| --- | --- | --- |
+| Credits, plan, allowed models | `account_usage` | `suno_account.credits_remaining`; `allowed_models` lists the `model` labels you may send |
+| Write and generate a song | `audio_create` | **Custom:** `lyrics` + `style` + `title`. **Simple:** `description` only. Mixing them is a 400 |
+| Wait for it | `audio_wait` | `ids: clip_ids`, `until: "complete"` for the finished file; call again while pending |
+| Ask how it sounds | `audio_listen` → `audio_listen_wait` | ask for JSON ("End with a JSON block with bpm and key") |
+| Cover, extend, mash up | `audio_covers_create`, `audio_extensions_create`, `audio_mashups_create` | or `audio_create` with `reference_audio_ids` and a `description` |
+| Stems, MIDI, sound effects, speech | `audio_stems_create`, `audio_midi`, `sounds_create`, `speech_create` | |
+| Library and playlists | `library_list`, `library_search`, `library_liked`, `playlists_*` | lyrics come from `audio_retrieve` |
+| Download | `audio_download` | call without `confirm`; on `requires_credit` ask before `confirm: true` |
 
-### Genre Defaults and Escaping Pop Gravity
+Other tools (`describeTool` / `describeNamespace('mcp__Suno')` in codemode) cover voices,
+custom models, characters, sequences, workspaces, images and video. Read a tool's
+description before first use: they spell out which arguments clash.
 
-Nearly every genre gravitates toward "pop" unless actively countered (rock→pop, funk→pop, emo→pop). Genre clusters also blur: asking for "boom bap" still pulls trap elements due to training co-occurrence.
-
-**Escape strategies:**
-1. **Explicit exclusions**: "no trap", "no pop"
-2. **Force unusual combinations**: "emo industrial", "math rock gospel"
-3. **Strategic contrast**: emphasize elements that naturally oppose unwanted defaults
-
-## Output Format
-
-Always output these components:
-
-### 1. Lyrics (in markdown code block)
-
-```
-[Intro]
-(instrumental description if needed)
-
-[Verse 1]
-Lyrics here with proper meter
-Each line should have consistent syllables
-Rhymes enhance but don't force them
-
-[Chorus]
-The hook that repeats exactly
-Every time it appears
-(background vocal echo)
-
-[Verse 2]
-Continue the narrative
-Match Verse 1's syllable count
-
-[Bridge]
-Tonal or thematic shift
-
-[Chorus]
-The hook that repeats exactly
-Every time it appears
-(background vocal echo)
-
-[Outro]
-Closing lines or instrumental fade
+```js
+// codemode: a custom-mode song, both takes, then a check of each
+const t = r => r.content.map(c => c.text).join('\n');
+const made = JSON.parse(t(await tools.mcp__Suno__audio_create({
+  title: 'Inside Your Browser', lyrics, style: 'bright synthpop with driving electronic drums and a clear female vocal',
+  idempotency_key: 'inside-your-browser-1',          // a retry with this key returns the same songs
+})));
+const done = JSON.parse(t(await tools.mcp__Suno__audio_wait({ ids: made.clip_ids, until: 'complete' })));
+// done.clips[i]: {id, status, title, song_url, …}; status "error" carries `error`
 ```
 
-### 2. Style Prompt
-
-Use the **colon-and-quotes format** for maximum clarity—this is a parsing hint, not cosmetic:
-
-```
-genre: "indie folk rock, 2020s bedroom pop"
-
-vocal: "soft female alto, intimate whisper-to-belt, gentle vibrato, slight nasal quality"
-
-instrumentation: "fingerpicked acoustic guitar, warm upright bass, sparse piano, light ambient pads"
-
-production: "lo-fi intimacy, tape warmth, close-miked vocals, narrow stereo image, natural room reverb"
-
-mood: "melancholic, nostalgic, late-night introspection"
-```
-
-For simpler prompts, use **producer-style run-on sentences**:
-```
-A fusion of 80s dark synthwave and modern cyberpunk aesthetics with extremely high-fidelity recording and professional mastering and analog warmth and controlled high-end and phase-coherent low end.
-```
-
-Up to ~1,000 characters in V5.5. Aim for 4–7 descriptors (~60–200 chars) for cleanest results; longer prompts give more control but risk competing descriptors.
-
-### 3. Creative Sliders (when relevant)
-
-Suggest values for Suno's Custom Mode sliders:
-```
-Weirdness: 50%           (0=conventional/radio-safe, 100=experimental/chaotic)
-Style Influence: 70%     (0=loose interpretation, 100=strict adherence to style prompt)
-Audio Influence: 50%     (only with reference audio; 0=inspiration only, 100=close mirror)
-```
-
-## Style Prompt Formatting Rules
-
-These rules apply to every style prompt you write.
-
-### Use Periods and "and/with", Not Commas
-
-Suno sees commas as opportunities to skip what follows. Use "and" and "with" to create run-on sentences, and use periods to end conceptual units.
-
-**Wrong:**
-```
-acoustic guitar, male vocals, emotional, reverb
-```
-
-**Right:**
-```
-acoustic guitar with male vocals and emotional delivery and reverb-heavy production.
-```
-
-### Avoid Lyric Bleed
-
-Suno performs soft classification between conditioning text and performable text. Anything singable might get sung.
-
-**Triggers to avoid in style prompts:**
-- Short poetic lines
-- Brackets that look like stage directions
-- ALL CAPS slogans
-- Quoted phrases that could be lyrics
-- Empty lyrics box
-- Rhythmic prose
-
-**Keep style prompts metadata-like and dense**: technical descriptions do not scan as lyrics.
-
-### Never Use Artist Names
-
-Suno rejects prompts containing artist names (e.g., "Vangelis", "Beatles", "Billie Eilish"). Instead, describe the sonic characteristics:
-
-| Instead of | Use |
-|------------|-----|
-| "Vangelis style" | "80s synth soundtrack, lush pads, cinematic, orchestral electronics" |
-| "Beatles style" | "60s British Invasion, jangly guitars, vocal harmonies, Merseybeat" |
-| "Billie Eilish style" | "dark pop, whispered vocals, minimal bass-heavy production" |
-| "Johnny Cash style" | "sparse country, baritone vocals, acoustic guitar, train beat" |
-
-## Formatting Rules
-
-### Structure Tags (in square brackets)
-
-```
-[Intro]       [Verse]       [Pre-Chorus]
-[Chorus]      [Post-Chorus] [Bridge]
-[Outro]       [Hook]        [Break]
-[Fade Out]    [Instrumental]
-```
-
-### Parameterized Metatags (V5+)
-
-Combine section tags with per-section production cues using colon or pipe syntax:
-
-```
-[Verse 1: whispered vocals, acoustic guitar only]
-Lyrics here...
-
-[Chorus: full band, anthemic, layered harmonies]
-Hook lyrics...
-
-[Bridge: piano only, vulnerable vocals, half-tempo]
-Contrasting lyrics...
-```
-
-Or use the pipe format for stacked styling that overrides the global prompt:
-
-```
-[Chorus | anthemic chorus | stacked harmonies | modern pop polish]
-Hook lyrics here...
-
-[guitar solo | 80s glam metal lead | heavy distortion | whammy bar bends]
-
-[Verse 2 | raspy lead vocal | emotional build-up | lo-fi warmth]
-```
-
-This gives per-section control over instrumentation, vocal style, and energy without putting production notes in the style prompt.
-
-### Vocal/Performance Tags
-
-```
-[Male Vocal]      [Female Vocal]    [Duet]
-[Choir]           [Spoken Word]     [Whisper]
-[Harmonies]       [Raspy Voice]     [Operatic]
-```
-
-### Sound Effects (use sparingly)
-
-```
-[Cheering]    [Clapping]    [Whispers]
-[Screams]     [Sighs]       [Chuckles]
-```
-
-## MAX Mode (Acoustic/Folk/Orchestral)
-
-For acoustic, country, folk, singer-songwriter, and orchestral work, MAX Mode dramatically improves quality:
-
-```
-[Is_MAX_MODE: MAX](MAX)
-[QUALITY: MAX](MAX)
-[REALISM: MAX](MAX)
-[REAL_INSTRUMENTS: MAX](MAX)
-[START_ON: TRUE]
-[START_ON: "write out the first few words of lyrics here"]
-
-genre: "outlaw country, 70s singer-songwriter"
-
-instruments: "single dreadnought acoustic, baritone male, vocal fry, blue notes, melismatic runs"
-
-style tags: "tape saturation, close-mic presence, small room acoustics, handheld mic grit, dry & raw"
-```
-
-**Note**: MAX Mode has minimal effect on electronic/trap/hip-hop/synthwave—use structural prompting for those.
-
-## Realism and Synthesis Descriptors
-
-For detailed descriptor vocabulary, see [references/descriptors.md](references/descriptors.md). Key principles:
-
-**Acoustic/organic genres**: use **recording-engineer language** (e.g., "close mic presence", "natural timing drift", "tape saturation", "short room reverb") instead of abstract vibes. Describe the recording environment and performance artifacts.
-
-**Electronic genres**: shift away from "realism" toward synthesis and modulation language (e.g., "FM synthesis bass", "LFO-driven movement", "resonant bandpass motion", "mono-stable low end"). Describe motion, harmonic shape, and stereo control rather than size or weight.
-
-## Writing Guidelines
-
-### Meter and Prosody (Suno-Specific)
-
-**Key principle for Suno**: stressed syllables must fall on musical beats for Suno to render words correctly. Unstressed syllables between beats can vary — this creates natural flow. When the natural word stress conflicts with the beat, Suno will mispronounce or mangle the line.
-
-- Keep syllable counts consistent within sections (e.g., all verse lines at 8 syllables)
-- Mark stresses when drafting to verify alignment: `da-DUM da-DUM da-DUM da-DUM`
-- Avoid padding with filler words ("it", "just", "so") to hit counts — restructure instead
-- Genre affects expected meter: NDW/industrial favors 8–12 syllables, punchy and staccato; French chanson favors octosyllabic or alexandrine lines
-
-### Rhyme
-
-- **Chorus must rhyme** — this creates the hook. Use perfect rhymes ("night/light") for maximum impact.
-- **Verses** can use slant rhyme ("home/alone") for a conversational feel.
-- **Chorus consistency**: always repeat the chorus identically unless the user requests variation. Copy-paste, don't paraphrase.
-
-### Contrast Between Sections
-
-Verses: longer lines, more unstressed syllables, conversational.
-Chorus: shorter lines, more stresses, punchy and direct.
-
-### Suno-Specific Anti-patterns
-
-- **Lyric bleed** in style prompts — the most common mistake (see Style Prompt Formatting Rules above)
-- **Commas in style prompts** — use periods and "and/with" instead (see Style Prompt Formatting Rules above)
-- **Artist names** — Suno rejects them; describe sonic characteristics instead
-- **Stacking unrelated imagery** ("neon skies, electric hearts, endless dreams") — signals AI-generated lyrics; pick one metaphor and develop it
-- **Paraphrasing the chorus** — always copy-paste it exactly
-- **Padding lines** with filler words to hit syllable count — restructure instead
-
-## Emphasis and Dynamics
-
-- **ALL CAPS** for shouted/high-energy lines (use sparingly, genre-appropriate)
-- **(parentheses)** for background vocals, echoes, ad-libs
-- Call-and-response pattern:
-  ```
-  What do we want?
-  (Freedom!)
-  When do we want it?
-  (Now!)
-  ```
-
-## Building Effective Personas
-
-For consistent vocal character across generations, build a **character dossier**:
-
-**Layer 1: Demographics and Timbre**
-Age, gender, voice type, fundamental character
-
-**Layer 2: Technical Delivery**
-Enunciation, phrasing, breath control, vocal techniques
-
-**Layer 3: Emotional Context**
-Detached, passionate, vulnerable, aggressive
-
-**Layer 4: Sonic Anchor**
-Reference points that give Suno a clear target — describe the sonic quality rather than naming artists
-
-**Example:**
-> Female contralto, androgynous, cold, monotone delivery, sharp enunciation, emotionally numb, sinister tone, industrial darkwave atmosphere with crushing bass and high-harmonic distortion.
-
-Use the persona consistently across style prompts for a coherent "artist" sound. Suno's Persona Voices feature (V5.5) can lock this in for reuse.
-
-## Quality Checklist
-
-Before delivering lyrics:
-- [ ] Syllable count consistent within sections
-- [ ] Chorus rhymes and repeats exactly
-- [ ] Metatags in square brackets
-- [ ] Background vocals in parentheses
-- [ ] Style prompt uses structured format (colons, periods, "and/with")
-- [ ] No singable phrases in style prompt
-- [ ] Genre-appropriate energy tags (ALL CAPS only where fitting)
-
-### Prosody Audit
-
-**Every song must pass a detailed prosody audit before submission.** No summary passes — a "PASS" without receipts is not a pass.
-
-The audit must include:
-- **Line-by-line syllable counts** for every sung line
-- **Rhyme scheme map** per section (AABB, ABAB, etc.) with classification: true rhyme, near-rhyme, or assonance
-- **Singability check** at the target BPM — how many syllables fit per bar? Flag lines that rush or drag
-- **Genre-appropriate meter**: e.g., NDW = 8–12 syllables, punchy, staccato; French chanson = octosyllabic or alexandrine. Match the genre's conventions.
-
-**Why this matters:** Rhyme fixes break meter. Meter fixes introduce filler. The only reliable gate is a line-by-line audit with visible evidence. If the checker says "PASS" without showing syllable counts, send it back.
-
-## Handling User Input
-
-### If user provides existing lyrics
-
-1. Ask how to adjust (never reproduce copyrighted lyrics verbatim)
-2. Suggest improvements: meter, rhyme, structure
-3. Offer to rewrite in the style of, not copy
-
-### If user provides a theme/concept
-
-1. Ask about genre/mood preferences
-2. Propose a structure (verse-chorus-verse-bridge-chorus)
-3. Draft lyrics with proper formatting
-4. Provide matching style prompt
-
-## Style Prompt Examples
-
-```
-genre: "operatic rockabilly, fast-paced, upbeat"
-
-vocal: "male vocals, hymnic chorus"
-
-mood: "energetic, triumphant"
-```
-
-```
-genre: "industrial krautrock with heavy German accent"
-
-instrumentation: "industrial equipment, distortion, motorik beat"
-
-production: "raw, mechanical, relentless"
-```
-
-```
-genre: "French yéyé synthwave, 112 BPM"
-
-vocal: "breathy female vocal, call and response"
-
-instrumentation: "tenor saxophone, gated reverb, handclaps"
-
-mood: "anthemic chorus, nostalgic"
-```
-
-```
-genre: "dark wave rockabilly with NDW influence, 130 BPM"
-
-vocal: "powerful sultry female vocals with punk edge"
-
-instrumentation: "slapped upright bass, moody analog synths"
-```
-
-## V5.5 Features
-
-This skill is optimized for Suno V5.5 (March 2026), which produces 48kHz broadcast-quality audio.
-
-### Key V5.5 Capabilities
-
-- **Persona Voices**: Create reusable vocal identities for consistent sound across songs (Pro/Premier)
-- **Voice Cloning**: Clone your own voice with a verification process (Pro/Premier)
-- **Custom Models**: Train up to 3 personalized models from your song library (Pro/Premier)
-- **My Taste**: Adaptive preference system that learns from your generation history (all users)
-- **Song Editor**: Replace sections, extend, crop, and fade for iterative refinement
-- **Creative Sliders**: Weirdness, Style Influence, and Audio Influence for fine-tuning generation personality
-- **12-stem separation**: Export individual instrument stems for DAW mixing (Pro/Premier)
-
-### Tips for V5.5
-
-- Style prompts can now be up to ~1,000 characters — use the extra space for detailed instrumentation and production notes when needed
-- Parameterized metatags (`[Verse: descriptor]` syntax) are more reliably followed in V5.5
-- Use Persona Voices for consistency when generating multiple songs for the same "artist"
-- The Song Editor is more cost-efficient than regenerating entire songs — fix weak sections instead
-
-## Suno API (via `suno` CLI)
-
-The `suno` shell command drives Suno through the user's own browser session on suno.com. It is a convenience wrapper around the same web API the suno.com UI uses.
-
-### Prerequisites — user actions, not agent actions
-
-Before you can call `suno`, the **user** must:
-
-1. Open https://suno.com in their own browser.
-2. Sign in with their Suno account.
-3. Keep the tab open while the skill is in use.
-
-The agent must never bypass these steps, prompt the user for a password, or attempt to log in on the user's behalf.
-
-### How authentication works
-
-The script runs `fetch()` calls **inside the suno.com page** via `playwright-cli eval`. The session token is read from the page and consumed by `fetch()` in the same evaluation block — it is never printed, stored, copied to the agent's context, or written to disk. Only the API response payload leaves the browser.
-
-If the user is not logged in, the script exits with a clear error directing them to sign in.
-
-### Credit safety
-
-`suno generate` and `suno extend` spend real Suno credits on every call. Always:
-
-- Present the final lyrics, style prompt, sliders, and persona to the user.
-- Wait for **explicit user approval** in the conversation.
-- Then invoke the command.
-
-Read-only commands (`credits`, `feed`, `personas`, `voices`, `poll`, `search`, `clip`, `playlists`, `projects`, `me`) are safe to run without confirmation.
-
-### Quick start
-
-```bash
-# Check credits
-suno credits
-
-# List personas/voices
-suno personas
-
-# Generate a song (custom mode) — REQUIRES USER APPROVAL
-suno generate --lyrics "[Verse]\nHello world" --tags "rock, indie" --title "My Song"
-
-# Generate with a persona — REQUIRES USER APPROVAL
-suno generate --lyrics "..." --tags "..." --title "..." --persona <persona-id>
-
-# Generate (simple mode — AI writes lyrics) — REQUIRES USER APPROVAL
-suno generate --simple "a funky disco track about robots"
-
-# List recent songs
-suno feed
-
-# Poll for completion
-suno poll <clip_id> --wait
-
-# Search
-suno search "indie rock" --type=public_song
-```
-
-### All commands
-
-`generate`, `poll`, `feed`, `clip`, `search`, `lyrics`, `lyrics-status`, `trash`, `credits`, `rename`, `visibility`, `extend`, `tags`, `playlists`, `projects`, `personas`, `voices`, `me`
-
-Run `suno help` for full usage, or see [references/endpoints.md](references/endpoints.md) for the complete API reference.
-
-## Submitting Songs via UI Automation
-
-For UI-based submission (as fallback or when the API isn't available), use `playwright-cli` to automate the Create page. Navigate to Create, select Custom mode, optionally choose a persona, fill in lyrics and styles, set the title, configure advanced options, and click Create.
-
-For the complete step-by-step guide, see [references/suno-ui-automation.md](references/suno-ui-automation.md).
-
-## Full Song Examples
-
-See [references/examples.md](references/examples.md) for complete lyrics with formatting.
-
-## Reference
-
-For detailed metatag lists and advanced techniques, see [references/metatags.md](references/metatags.md)
-
-For detailed realism and synthesis descriptor vocabulary, see [references/descriptors.md](references/descriptors.md)
+Arguments worth knowing on `audio_create`: `model` (omit for the plan default; say which
+you send), `negative_style` (custom mode only), `controls` (`weirdness`, `style_influence`
+0–1, `variety` 0–4; omit to keep defaults, `0` is a real value), `duration` (15–360 s),
+`instrumental`, `voice_id`, and `max_mode` only when the user asks for Max Mode by name,
+since it multiplies the cost. Limits: `lyrics` 5,000 characters, `style` 1,000.
+
+## Lyrics
+
+- Section tags in square brackets: `[Intro] [Verse 1] [Pre-Chorus] [Chorus] [Bridge] [Outro]`.
+  Per-section cues go inside the tag: `[Chorus: full band, stacked harmonies]` or
+  `[Verse 2 | raspy lead | lo-fi warmth]`.
+- `(parentheses)` are background vocals and ad-libs; ALL CAPS is shouted, use it sparingly.
+- Repeat the chorus word for word every time. The chorus rhymes (perfect rhymes); verses
+  may use slant rhymes.
+- Keep syllable counts steady within a section and put stressed syllables on the beat;
+  Suno mangles words whose stress fights the meter. Restructure a line instead of padding
+  it with "just", "so", "it".
+- Verses run longer and conversational; the chorus is short, punchy and direct.
+- Develop one image instead of stacking unrelated ones ("neon skies, electric hearts").
+- Never reproduce copyrighted lyrics; rewrite in the manner of, not copy.
+
+**Audit before showing:** a table with each sung line's syllable count, each section's
+rhyme scheme (AABB, ABAB; true, near or assonance), and lines that would rush or drag at
+the target tempo. A "pass" without the counts isn't a pass.
+
+## Style prompt
+
+- 4–7 descriptors, about 60–200 characters: genre and era, vocal, instruments, production,
+  mood, optional tempo. Either labelled lines (`genre: "…"`, `vocal: "…"`) or one
+  producer-style sentence joined with "and" and "with": Suno reads commas as optional.
+- Keep it metadata-like. Short poetic lines, quoted phrases, ALL CAPS slogans and
+  bracketed directions can get sung (lyric bleed).
+- No artist names: Suno rejects them. Describe the sound ("60s British Invasion, jangly
+  guitars, vocal harmonies").
+- Most genres drift toward pop. Counter it with `negative_style` ("pop, trap"), unusual
+  pairings ("math rock gospel"), or by stressing the opposing elements.
+- Acoustic, folk and orchestral: recording-engineer language ("close-miked, tape
+  saturation, small room"). Electronic: synthesis language ("FM bass, LFO-driven filter,
+  mono low end").
+
+## References
+
+- `references/metatags.md`: every structure, vocal, instrument and effect tag.
+- `references/descriptors.md`: realism and synthesis vocabulary.
+- `references/examples.md`: complete songs with style prompts.
