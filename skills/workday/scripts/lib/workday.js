@@ -191,7 +191,145 @@ function chainOf(workerId, team, self) {
   return out;
 }
 
+// ── rate limit ────────────────────────────────────────────────────────
+// Workday answers a burst of requests with HTTP 200 and
+// <wml:Application_Error Type="Validation"><wml:Message>Too many repeating
+// requests. Please try again later.</wml:Message></wml:Application_Error>.
+// Only this message is a reason to wait and retry; other errors are final.
+function isRateLimited(body) {
+  const problem = workdayError(body);
+  return !!problem && problem.kind === 'workday' && /^Too many repeating requests\b/i.test(problem.message);
+}
+
+// "15s", "500ms", "1h", "2d", "90" (seconds) → milliseconds, else null.
+function parseDuration(text) {
+  const m = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?$/i.exec(String(text === undefined ? '' : text).trim());
+  if (!m) return null;
+  const unit = { ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 }[(m[2] || 's').toLowerCase()];
+  return Math.round(Number(m[1]) * unit);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ── cache ─────────────────────────────────────────────────────────────
+// One file per tenant: <host>_<tenant>.json. Both parts are already
+// restricted (tenantFromUrl), the replace is a second guard for the path.
+function cacheFileName(origin, tenant) {
+  const host = new URL(origin).hostname;
+  return `${host}_${tenant}.json`.replace(/[^A-Za-z0-9_.-]/g, '_');
+}
+
+// An entry is { at: <ms since epoch>, value }. Older than maxAge, from the
+// future, or malformed → not fresh.
+function entryFresh(entry, now, maxAgeMs) {
+  if (!entry || typeof entry !== 'object' || !Number.isFinite(entry.at) || entry.value === undefined) return false;
+  const age = now - entry.at;
+  return age >= 0 && age <= maxAgeMs;
+}
+
+// ── lookup input ──────────────────────────────────────────────────────
+// Plain text: one name per line. JSON: an array of objects with a `name`.
+// Returns { items: [{ name, source }] } or { error }.
+function parseLookupInput(text, asJson) {
+  if (asJson) {
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      return { error: 'stdin is not valid JSON; expected an array of objects with a "name" field' };
+    }
+    if (!Array.isArray(data)) return { error: 'stdin JSON must be an array of objects with a "name" field' };
+    const bad = data.findIndex((o) => !o || typeof o !== 'object' || Array.isArray(o) || typeof o.name !== 'string' || !clean(o.name));
+    if (bad >= 0) return { error: `item ${bad} has no "name" string` };
+    return { items: data.map((o) => ({ name: clean(o.name), source: o })) };
+  }
+  const items = String(text)
+    .split(/\r?\n/)
+    .map(clean)
+    .filter(Boolean)
+    .map((name) => ({ name, source: null }));
+  return { items };
+}
+
+// A name → one lookup result. `people` is the search result, `profile` the
+// profile of the chosen person (or null when Workday has none).
+function lookupResult(name, people, profile) {
+  const pick = choosePerson(name, people);
+  if (!pick.person) {
+    const cands = (pick.candidates || []).map((p) => ({ id: p.id, name: p.name, title: p.title, org: p.org }));
+    return { status: cands.length ? 'ambiguous' : 'not-found', candidates: cands };
+  }
+  const p = pick.person;
+  if (!profile) return { status: 'no-profile', id: p.id, name: p.name, title: p.title, org: p.org, location: p.location };
+  return {
+    status: 'found',
+    id: p.id,
+    name: p.name,
+    title: profile.title || p.title,
+    org: p.org || (profile.orgPath.length ? profile.orgPath[profile.orgPath.length - 1] : ''),
+    location: profile.location || p.location,
+    manager: profile.managers.map((m) => m.name).join(', '),
+    managerId: profile.managers.map((m) => m.id).join(', '),
+  };
+}
+
+// ── tree ──────────────────────────────────────────────────────────────
+// Breadth-first walk of an org. `load(orgId)` returns the parsed org with
+// every member (see loadOrg in workday.jsh). Each person appears once, with
+// the top-level group: the direct report of the root whose sub-org holds
+// them. A direct report of the root heads their own group. The root's owner
+// has group null. maxDepth: expand orgs at most this many levels down.
+async function walkTree(rootOrgId, load, { maxDepth = Infinity } = {}) {
+  const people = new Map();
+  const warnings = [];
+  const seenOrgs = new Set([rootOrgId]);
+  const queue = [{ orgId: rootOrgId, depth: 0, group: null }];
+  let root = null;
+  const add = (p) => {
+    if (p.id && !people.has(p.id)) people.set(p.id, p);
+  };
+  while (queue.length) {
+    const { orgId, depth, group } = queue.shift();
+    const nav = await load(orgId);
+    if (!nav) throw new Error(`no org chart for ${orgId}`);
+    if (nav.incomplete) warnings.push(`${orgId}: listed ${nav.children.length} of ${nav.total} members`);
+    const orgName = (nav.self && nav.self.name) || orgId;
+    if (depth === 0) {
+      root = { id: orgId, name: orgName, owners: (nav.self && nav.self.owners) || [] };
+      for (const o of root.owners) {
+        add({ id: o.id, name: o.name, title: (nav.self && nav.self.title) || '', location: (nav.self && nav.self.location) || '', org: orgName, group: null, groupId: null, depth: 0 });
+      }
+    }
+    for (const c of nav.children) {
+      if (c.kind === 'person') {
+        const g = depth === 0 ? { id: c.id, name: c.name } : group;
+        add({ id: c.id, name: c.name, title: c.title, location: c.location, org: orgName, group: g.name, groupId: g.id, depth: depth + 1 });
+        continue;
+      }
+      const lead = c.owners[0] || { id: c.id, name: c.name };
+      const g = depth === 0 ? lead : group;
+      for (const o of c.owners) {
+        const own = depth === 0 ? o : group;
+        add({ id: o.id, name: o.name, title: c.title, location: c.location, org: orgName, group: own.name, groupId: own.id, depth: depth + 1 });
+      }
+      if (!seenOrgs.has(c.id) && depth + 1 < maxDepth) {
+        seenOrgs.add(c.id);
+        queue.push({ orgId: c.id, depth: depth + 1, group: g });
+      }
+    }
+  }
+  return { root, people: [...people.values()], warnings };
+}
+
 module.exports = {
+  isRateLimited,
+  parseDuration,
+  sleep,
+  cacheFileName,
+  entryFresh,
+  parseLookupInput,
+  lookupResult,
+  walkTree,
   INSTANCE_ID,
   SERVER_PATH,
   tenantFromUrl,

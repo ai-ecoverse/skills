@@ -4,6 +4,9 @@ const browser = require('sliccy:browser');
 const cli = require('sliccy:cli');
 const color = require('sliccy:color');
 const fmt = require('sliccy:fmt');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const wd = require('./lib/workday.js');
 
 const PREFIX = 'workday';
@@ -18,10 +21,27 @@ USAGE
   workday orgchart [<name|id>]       Management chain, team and direct reports
                                      (default: you)
   workday org <org-id>               One organization: owner, parent, members
+  workday lookup                     Resolve names from stdin (one per line) to
+                                     id, title, org, location, manager
+  workday tree <name|id>             Everyone below a person or an org (247$… or
+                                     2500$…), with their top-level group
+  workday cache [info]               Cache entries, size and location
+  workday cache clear                Empty the cache
 
 FLAGS
-  --json        Output JSON
+  --json        Output JSON (lookup: stdin is a JSON array of objects with a "name")
   --chain N     orgchart: show at most N managers above the person (default: all)
+  --depth N     tree: expand at most N levels (default: all)
+  --max-age D   Reuse cached answers up to D old: 90s, 15m, 1h, 2d (default: 24h)
+  --fresh       Ignore the cache for reading and refresh it
+  --gap D       lookup, tree: wait D between requests (default: 1s)
+  --retry-wait D  First wait after "Too many repeating requests" (default: 15s;
+                doubles each retry, 4 tries)
+  Put flags after the names: a flag may take the next word as its value.
+
+CACHE
+  Answers are kept per tenant in ~/.cache/workday/<host>_<tenant>.json (or in
+  $WORKDAY_CACHE_DIR). No cookies, tokens or headers are stored.
 
 IDS
   Workers are 247$…, supervisory organizations 2500$…; every listing prints
@@ -56,6 +76,21 @@ const words = positional.join(' ').trim();
 
 const SIGN_IN = 'sign in to Workday in your browser, then retry';
 
+// ── settings ──────────────────────────────────────────────────────────
+function duration(name, fallback) {
+  if (flags[name] === undefined) return fallback;
+  const ms = wd.parseDuration(flags[name]);
+  if (ms === null) cli.die(`--${name} needs a duration such as 500ms, 15s, 1h or 2d, not "${flags[name]}"`, { prefix: PREFIX });
+  return ms;
+}
+const DAY = 86400000;
+const MAX_TRIES = 4;
+const BULK = subcommand === 'lookup' || subcommand === 'tree';
+const maxAge = duration('max-age', DAY);
+const retryWait = duration('retry-wait', 15000);
+const gap = duration('gap', BULK ? 1000 : 0);
+const fresh = flags.fresh === true || flags.fresh === 'true';
+
 // ── session ───────────────────────────────────────────────────────────
 let _site = null;
 async function site() {
@@ -70,6 +105,7 @@ async function site() {
 
 // One wrapper, so every command reports an expired session the same way.
 // Workday answers many errors with 200 and an XML or HTML body.
+let sent = false;
 async function call(path, { method = 'GET', form } = {}) {
   const s = await site();
   const opts = { method, headers: { Accept: 'application/json' } };
@@ -77,8 +113,21 @@ async function call(path, { method = 'GET', form } = {}) {
     opts.headers['Content-Type'] = 'application/x-www-form-urlencoded';
     opts.body = new URLSearchParams(form).toString();
   }
-  const res = await browser.fetch(s.tab, `${s.origin}${path}`, opts);
-  if (res.status === 401 || res.status === 403) cli.die(`session expired — ${SIGN_IN}`, { prefix: PREFIX });
+  if (gap && sent) await wd.sleep(gap);
+  sent = true;
+  let wait = retryWait;
+  let res;
+  for (let attempt = 1; ; attempt++) {
+    res = await browser.fetch(s.tab, `${s.origin}${path}`, opts);
+    if (res.status === 401 || res.status === 403) cli.die(`session expired — ${SIGN_IN}`, { prefix: PREFIX });
+    if (!wd.isRateLimited(res.body)) break;
+    if (attempt >= MAX_TRIES) {
+      cli.die(`Workday is rate limiting this session ("Too many repeating requests") and still refused after ${MAX_TRIES} tries; wait a few minutes, then retry (answers already fetched are cached)`, { prefix: PREFIX });
+    }
+    cli.warn(`Workday: too many requests; waiting ${Math.round(wait / 1000)}s (try ${attempt + 1} of ${MAX_TRIES})`);
+    await wd.sleep(wait);
+    wait *= 2;
+  }
   const problem = wd.workdayError(res.body);
   if (problem && problem.kind === 'html') {
     cli.die(`Workday returned a page instead of data for ${path} (HTTP ${res.status}); your session may have expired — ${SIGN_IN}`, { prefix: PREFIX });
@@ -95,6 +144,58 @@ async function call(path, { method = 'GET', form } = {}) {
   return res.body;
 }
 
+// ── cache ─────────────────────────────────────────────────────────────
+// One JSON file per tenant. It holds parsed answers (search results, profiles,
+// team pages, assembled orgs) under a key, each with the time it was stored.
+// Errors never get here: call() dies before a result exists. Chunk URLs are
+// server-side cursors, so they are never stored.
+const CACHE_VERSION = 1;
+const KEEP = 30 * DAY;
+const cacheDir = () => process.env.WORKDAY_CACHE_DIR || path.join(os.homedir(), '.cache', 'workday');
+let _cache = null;
+const touched = new Set();
+async function cacheLoad() {
+  if (_cache) return _cache;
+  const s = await site();
+  const file = path.join(cacheDir(), wd.cacheFileName(s.origin, s.tenant));
+  let entries = {};
+  try {
+    const data = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+    if (data && data.version === CACHE_VERSION && data.entries && typeof data.entries === 'object') entries = data.entries;
+  } catch (_) {
+    // missing or damaged: start empty
+  }
+  _cache = { file, entries, dirty: 0 };
+  return _cache;
+}
+async function cacheSave() {
+  if (!_cache || !_cache.dirty) return;
+  const now = Date.now();
+  for (const [k, e] of Object.entries(_cache.entries)) if (!(e && now - e.at <= KEEP)) delete _cache.entries[k];
+  const s = await site();
+  // The cache holds directory data (names, titles, emails, managers): private to this user.
+  await fs.promises.mkdir(path.dirname(_cache.file), { recursive: true, mode: 0o700 });
+  const tmp = `${_cache.file}.${process.pid || 0}.tmp`;
+  await fs.promises.writeFile(tmp, JSON.stringify({ version: CACHE_VERSION, host: new URL(s.origin).hostname, tenant: s.tenant, entries: _cache.entries }), { mode: 0o600 });
+  await fs.promises.chmod(tmp, 0o600);
+  await fs.promises.rename(tmp, _cache.file);
+  _cache.dirty = 0;
+}
+// Answer from the cache, else produce it. A result of undefined/null is not stored.
+async function cached(key, produce, { store = () => true } = {}) {
+  const c = await cacheLoad();
+  const hit = c.entries[key];
+  // --fresh refetches once per run: a key stored in this run is reused.
+  if ((!fresh || touched.has(key)) && wd.entryFresh(hit, Date.now(), maxAge)) return hit.value;
+  const value = await produce();
+  if (value !== undefined && value !== null && store(value)) {
+    c.entries[key] = { at: Date.now(), value };
+    touched.add(key);
+    if (++c.dirty >= 25) await cacheSave();
+  }
+  return value;
+}
+
 const inst = (s, id) => `/${s.tenant}/inst/autocompletesearch/${id}.htmld`;
 
 async function me() {
@@ -107,7 +208,7 @@ async function me() {
 async function search(query) {
   const s = await site();
   const q = new URLSearchParams({ q: query, autocomplete: 'true' }).toString();
-  return wd.searchPeople(await call(`/${s.tenant}/search.htmld?${q}`));
+  return cached(`search:${query}`, async () => wd.searchPeople(await call(`/${s.tenant}/search.htmld?${q}`)));
 }
 
 // <name|id> → { id, name }; no argument means the signed-in user.
@@ -121,43 +222,55 @@ async function resolve(who) {
   cli.die(list ? `${pick.error}:\n${list}` : pick.error, { prefix: PREFIX });
 }
 
-async function profile(person) {
+async function profileOrNull(person) {
   const s = await site();
-  const p = wd.parseProfile(await call(inst(s, person.id)));
+  return cached(`profile:${person.id}`, async () => {
+    const p = wd.parseProfile(await call(inst(s, person.id)));
+    return p ? { ...p, id: p.id || person.id } : null;
+  });
+}
+
+async function profile(person) {
+  const p = await profileOrNull(person);
   if (!p) cli.die(`no Workday profile for ${person.name || person.id}`, { prefix: PREFIX });
-  return { ...p, id: p.id || person.id };
+  return p;
 }
 
 // One organization with every member. Workday sends the first page of
 // members with the org; the rest come from a chunk URL that is only good
-// right after that request, so page through it at once.
+// right after that request, so page through it at once. The assembled list
+// is what gets cached (without the chunk URL). `team` may be a function, so
+// a cached org needs no request at all.
 const CHUNK = 50;
-const MAX_CHUNKS = 40;
+const MAX_CHUNKS = 400;
 async function loadOrg(orgId, team) {
-  const nav = wd.parseNavigator(await call(`${team.navigationPath}/${orgId}.htmld`, {
-    method: 'POST',
-    form: { 'initial-step': team.taskId },
-  }));
-  if (!nav) cli.die(`Workday sent no org chart for ${orgId}`, { prefix: PREFIX });
-  for (let i = 0; nav.chunkPath && nav.children.length < nav.total; i++) {
-    if (i >= MAX_CHUNKS) {
-      cli.warn(`${orgId}: listed ${nav.children.length} of ${nav.total} members`);
-      break;
+  return cached(`org:${orgId}`, async () => {
+    const t = typeof team === 'function' ? await team() : team;
+    const nav = wd.parseNavigator(await call(`${t.navigationPath}/${orgId}.htmld`, {
+      method: 'POST',
+      form: { 'initial-step': t.taskId },
+    }));
+    if (!nav) cli.die(`Workday sent no org chart for ${orgId}`, { prefix: PREFIX });
+    for (let i = 0; nav.chunkPath && nav.children.length < nav.total; i++) {
+      if (i >= MAX_CHUNKS) break;
+      const page = wd.parseChunk(await call(`${nav.chunkPath}.htmld?startRow=${nav.children.length}&maxRows=${CHUNK}`));
+      if (!page || !page.children.length) break;
+      nav.children.push(...page.children);
     }
-    const page = wd.parseChunk(await call(`${nav.chunkPath}.htmld?startRow=${nav.children.length}&maxRows=${CHUNK}`));
-    if (!page || !page.children.length) break;
-    nav.children.push(...page.children);
-  }
-  return nav;
+    nav.incomplete = nav.children.length < nav.total;
+    if (nav.incomplete) cli.warn(`${orgId}: listed ${nav.children.length} of ${nav.total} members`);
+    return { ...nav, chunkPath: null };
+  }, { store: (nav) => !nav.incomplete });
 }
 
 // The View Team page also carries the task id and URL the org chart needs.
 async function teamPage(p) {
   if (!p.teamPath) cli.die(`Workday shows no team for ${p.name || p.id}`, { prefix: PREFIX });
-  const team = wd.parseTeamPage(await call(`${p.teamPath}.htmld`));
-  if (!team || !team.orgId || !team.taskId || !team.navigationPath) {
-    cli.die(`Workday's team page for ${p.name || p.id} has no org chart`, { prefix: PREFIX });
-  }
+  const team = await cached(`team:${p.teamPath}`, async () => {
+    const t = wd.parseTeamPage(await call(`${p.teamPath}.htmld`));
+    return t && t.orgId && t.taskId && t.navigationPath ? t : null;
+  });
+  if (!team) cli.die(`Workday's team page for ${p.name || p.id} has no org chart`, { prefix: PREFIX });
   return team;
 }
 
@@ -238,7 +351,7 @@ async function cmdOrgchart() {
 async function cmdOrg() {
   const orgId = positional[0];
   if (!orgId || !/^2500\$\d+$/.test(orgId)) cli.die("usage: workday org <org-id>   (a 2500$… id from orgchart; quote it: '2500$2001')", { prefix: PREFIX });
-  const nav = await loadOrg(orgId, await defaultTeam());
+  const nav = await loadOrg(orgId, defaultTeam);
   if (flags.json) return cli.out(nav);
   const self = nav.self || { name: orgId, owners: [] };
   console.log(`\n  ${color.cyan(color.bold(self.name))}  ${id(orgId)}`);
@@ -247,6 +360,92 @@ async function cmdOrg() {
   if (nav.parent) console.log(`  ${color.dim('Part of'.padEnd(10))}${nav.parent.name} ${id(nav.parent.id)}`);
   heading(`Members  ${color.dim(String(nav.total))}`);
   rows(nav.children);
+}
+
+async function readStdin() {
+  try {
+    return fs.readFileSync(0, 'utf8');
+  } catch (_) {
+    return '';
+  }
+}
+
+async function cmdLookup() {
+  const input = wd.parseLookupInput(await readStdin(), flags.json === true);
+  if (input.error) cli.die(input.error, { prefix: PREFIX });
+  if (!input.items.length) cli.die('usage: workday lookup  (names on stdin, one per line; with --json an array of objects with a "name")', { prefix: PREFIX });
+  const results = [];
+  for (const it of input.items) {
+    const people = await search(it.name);
+    const pick = wd.choosePerson(it.name, people);
+    const prof = pick.person ? await profileOrNull(pick.person) : null;
+    results.push({ ...(it.source || { name: it.name }), workday: wd.lookupResult(it.name, people, prof) });
+  }
+  if (flags.json) return cli.out(results);
+  const cell = (w, k) => (w.status === 'found' || w.status === 'no-profile' ? w[k] || '' : '');
+  const status = (w) => (w.status === 'ambiguous' ? `ambiguous (${w.candidates.length})` : w.status);
+  console.log(fmt.table(results.map((r) => [r.name, status(r.workday), cell(r.workday, 'title'), cell(r.workday, 'org'), cell(r.workday, 'location'), cell(r.workday, 'manager'), r.workday.id ? id(r.workday.id) : '']))
+    .split('\n').map((l) => `  ${l}`).join('\n'));
+}
+
+async function cmdTree() {
+  if (!words) cli.die("usage: workday tree <name|247$id|2500$id> [--depth N] [--json]", { prefix: PREFIX });
+  const maxDepth = flags.depth === undefined ? Infinity : parseInt(flags.depth, 10);
+  if (!(maxDepth >= 1)) cli.die('--depth needs a whole number of 1 or more', { prefix: PREFIX });
+  let orgId;
+  let team;
+  if (/^2500\$\d+$/.test(words)) {
+    orgId = words;
+    team = defaultTeam;
+  } else {
+    const p = await profile(await resolve(words));
+    const t = await teamPage(p);
+    orgId = t.orgId;
+    team = t;
+    const own = await loadOrg(orgId, t);
+    if (!own.self || !own.self.owners.some((o) => o.id === p.id)) cli.die(`${p.name || p.id} leads no organization in Workday (their team page is ${own.self ? own.self.name : orgId}); pass an org id (2500$…) to walk it`, { prefix: PREFIX });
+  }
+  const tree = await wd.walkTree(orgId, (o) => loadOrg(o, team), { maxDepth });
+  for (const w of tree.warnings) cli.warn(w);
+  const data = { root: { id: tree.root.id, name: tree.root.name }, depth: Number.isFinite(maxDepth) ? maxDepth : null, count: tree.people.length, incomplete: tree.warnings.length > 0, people: tree.people };
+  if (flags.json) return cli.out(data);
+  console.log(`\n  ${color.cyan(color.bold(data.root.name))}  ${id(data.root.id)}  ${color.dim(`${data.count} people`)}`);
+  console.log(fmt.table(tree.people.map((p) => [p.name, fmt.trunc(p.title, 50), p.location, p.group || '', id(p.id)])).split('\n').map((l) => `  ${l}`).join('\n'));
+}
+
+async function cmdCache() {
+  const action = positional[0] || 'info';
+  if (action !== 'info' && action !== 'clear') cli.die('usage: workday cache [info|clear]', { prefix: PREFIX });
+  const dir = cacheDir();
+  let names = [];
+  try {
+    names = (await fs.promises.readdir(dir)).filter((n) => n.endsWith('.json')).sort();
+  } catch (_) {
+    names = [];
+  }
+  const files = [];
+  for (const n of names) {
+    const file = path.join(dir, n);
+    let entries = 0;
+    let bytes = 0;
+    try {
+      bytes = (await fs.promises.stat(file)).size;
+      entries = Object.keys(JSON.parse(await fs.promises.readFile(file, 'utf8')).entries || {}).length;
+    } catch (_) {
+      // damaged file: counts as 0 entries
+    }
+    files.push({ path: file, entries, bytes });
+  }
+  if (action === 'clear') {
+    for (const f of files) await fs.promises.rm(f.path, { force: true });
+    if (flags.json) return cli.out({ cleared: files.length, entries: files.reduce((n, f) => n + f.entries, 0), path: dir });
+    return console.log(`  ${color.green('✓')} cleared ${files.reduce((n, f) => n + f.entries, 0)} entries in ${files.length} file(s) under ${dir}`);
+  }
+  const total = { entries: files.reduce((n, f) => n + f.entries, 0), bytes: files.reduce((n, f) => n + f.bytes, 0) };
+  if (flags.json) return cli.out({ path: dir, ...total, files });
+  console.log(`\n  ${color.bold('Cache')}  ${dir}`);
+  console.log(`  ${total.entries} entries, ${total.bytes} bytes in ${files.length} file(s)`);
+  for (const f of files) console.log(`  ${color.dim(path.basename(f.path))}  ${f.entries} entries, ${f.bytes} bytes`);
 }
 
 async function cmdWhoami() {
@@ -267,11 +466,16 @@ async function main() {
       case 'person': case 'profile': return await cmdPerson();
       case 'orgchart': case 'team': return await cmdOrgchart();
       case 'org': return await cmdOrg();
+      case 'lookup': return await cmdLookup();
+      case 'tree': return await cmdTree();
+      case 'cache': return await cmdCache();
       default: cli.die(`unknown command: ${subcommand}\nRun 'workday --help' for usage.`, { prefix: PREFIX });
     }
   } catch (err) {
     if (err?.name === 'NodeExitError') throw err;
     cli.die(cdpFailureHint(err) || (err && err.message ? err.message : String(err)), { prefix: PREFIX });
+  } finally {
+    await cacheSave().catch(() => {});
   }
 }
 await main();

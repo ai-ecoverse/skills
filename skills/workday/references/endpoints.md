@@ -18,6 +18,17 @@ A bad or incomplete request usually answers **200** with an XML body, not JSON:
 <wml:Application_Error Type="Server Error"><wml:Message>There was an error processing your request. …</wml:Message></wml:Application_Error>
 ```
 
+### Rate limit
+
+A burst of requests gets HTTP **200** and
+
+```xml
+<wml:Application_Error … Type="Validation"><wml:Message>Too many repeating requests. Please try again later.</wml:Message></wml:Application_Error>
+```
+
+Only this message means "wait and retry" (`isRateLimited()`); `call()` waits 15 s,
+30 s, 60 s and gives up after the 4th try. Other `Application_Error` bodies are final.
+
 A lapsed session, or a URL that doesn't exist, gives an HTML page (404 or 200).
 So check the body before you parse it as JSON (`workdayError()` in `scripts/lib/workday.js`).
 
@@ -84,8 +95,12 @@ body `initial-step=<taskIid>` → `body.navigatorContainers[]`, one each of
 with `totalCount` and `navigatorDetails[]`. The chunk URL is a server-side
 cursor (`/<t>/navigablechunk/c…/<n>`) and goes stale: read straight after its
 org chart request it answers, but reused after other requests it answers the
-`Application_Error` XML. Page through it immediately. Every org seen while
-capturing (up to 19 members) came back whole in the first response.
+`Application_Error` XML. Page through it immediately, once per org, before the next org's request.
+Never cache a chunk response or its URL: cache the assembled member list of the
+org instead (the `workday` cache does). The first response carries only part of
+a large org (`count` is the total, the list is shorter), so a walk that skips the
+chunk requests drops people without any error. `workday` asks for 50 rows a chunk
+and marks an org `incomplete` (not cached) if the list still falls short.
 
 ## Not used
 
