@@ -32,7 +32,8 @@ USAGE
   workday cache clear                Empty the cache
 
 FLAGS
-  --json        Output JSON (lookup: stdin is a JSON array of objects with a "name")
+  --json        Output JSON (lookup: stdin is a JSON array of objects with a "name";
+                keepalive: one JSON object per touch, one per line)
   --chain N     orgchart: show at most N managers above the person (default: all)
   --depth N     tree: expand at most N levels (default: all)
   --max-age D   Reuse cached answers up to D old: 90s, 15m, 1h, 2d (default: 24h)
@@ -469,22 +470,34 @@ async function cmdKeepalive() {
   const MAX_PROBLEMS = 3;
   let problems = 0;
   let failed = 0;
+  const report = (line, entry) => console.log(flags.json ? JSON.stringify(entry) : line);
   for (let n = 1; ; n++) {
     const started = wd.now();
     const r = await touch();
     if (r.gone) {
-      console.log(`${clock(started)} SESSION GONE (${r.gone})`);
+      report(`${clock(started)} SESSION GONE (${r.gone})`, { at: new Date(started).toISOString(), status: 'gone', reason: r.gone });
       cli.die(`the Workday session is gone (${r.gone}); ${SIGN_IN}. keepalive never signs in for you`, { prefix: PREFIX });
     }
     const wait = every !== null ? every : wd.keepaliveInterval(r.ok ? r.minutes : null);
     if (r.ok) {
       problems = 0;
       if (n === 1 && every !== null && r.minutes && every >= r.minutes * 60000) cli.warn(`--every ${human(every)} is not below the session timeout of ${r.minutes} minutes; the session can lapse between touches`);
-      console.log(`${clock(started)} OK${r.minutes ? ` (idle timeout ${r.minutes}m)` : ''}${n < total ? `, next in ${human(wait)}` : ''}`);
+      report(`${clock(started)} OK${r.minutes ? ` (idle timeout ${r.minutes}m)` : ''}${n < total ? `, next in ${human(wait)}` : ''}`, {
+        at: new Date(started).toISOString(),
+        status: 'ok',
+        timeoutMinutes: r.minutes ?? null,
+        nextMs: n < total ? wait : null,
+      });
     } else {
       problems++;
       failed++;
-      console.log(`${clock(started)} PROBLEM ${r.problem}${n < total && problems < MAX_PROBLEMS ? `, retrying in ${human(wait)}` : ''}`);
+      const retry = n < total && problems < MAX_PROBLEMS;
+      report(`${clock(started)} PROBLEM ${r.problem}${retry ? `, retrying in ${human(wait)}` : ''}`, {
+        at: new Date(started).toISOString(),
+        status: 'problem',
+        problem: r.problem,
+        nextMs: retry ? wait : null,
+      });
       if (total === 1 || problems >= MAX_PROBLEMS) {
         cli.die(r.problem === 'rate limited' ? RATE_LIMITED : `keepalive failed: ${r.problem}${problems > 1 ? ` (${problems} times in a row)` : ''}`, { prefix: PREFIX });
       }

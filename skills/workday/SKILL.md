@@ -103,7 +103,9 @@ workday keepalive --once          # one touch, for cron
 workday keepalive --count 3       # three touches, then exit
 ```
 
-One line per touch: `09:00:00 OK (idle timeout 30m), next in 10m`. Exit 0 when
+One line per touch: `09:00:00 OK (idle timeout 30m), next in 10m`. With `--json`,
+one JSON object per line instead: `at`, `status` (`ok`, `problem`, `gone`),
+`timeoutMinutes`, `problem` or `reason`, and `nextMs`. Exit 0 when
 every touch worked; a bounded run (`--once`, `--count N`) with any failed touch
 exits 1 when it ends. It exits 1, saying so, as soon as the session is gone (sign-in
 page, 401/403, or an XML error); three failed touches in a row (HTTP 5xx, an
