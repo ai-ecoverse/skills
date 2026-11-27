@@ -50,7 +50,7 @@ KEEPALIVE
   Calls the request Workday's own "your session is about to expire" prompt makes
   (GET /<tenant>/ping.htmld). It only extends a session you already signed in to:
   it never signs in, and Workday's absolute session limit still applies. Exit 0 =
-  every touch worked; exit 1 = the session is gone or Workday refused.
+  every touch worked; exit 1 = a touch failed, or the session is gone.
 
 CACHE
   Answers are kept per tenant in ~/.cache/workday/<host>_<tenant>.json (or in
@@ -116,10 +116,6 @@ async function site() {
   return _site;
 }
 
-// Send one request, waiting and retrying while Workday rate limits. Says
-// nothing about the session: send() returns the response, or { limited: true }
-// when Workday still refused after MAX_TRIES. `headers` are added to the
-// defaults.
 let sent = false;
 async function send(path, { method = 'GET', form, headers } = {}) {
   const s = await site();
@@ -434,12 +430,6 @@ async function cmdTree() {
   console.log(fmt.table(tree.people.map((p) => [p.name, fmt.trunc(p.title, 50), p.location, p.group || '', id(p.id)])).split('\n').map((l) => `  ${l}`).join('\n'));
 }
 
-// ── keepalive ─────────────────────────────────────────────────────────
-// What Workday's own client does when the "session about to expire" prompt is
-// answered (kernel.min.js, session manager): GET /<tenant>/ping.htmld with the
-// session's token from home.htmld. Only GETs, from the CLI side. Never a form,
-// a click or a sign-in.
-// → { ok, minutes } | { gone } (the session is over) | { problem } (try again)
 async function touch() {
   const s = await site();
   const home = await send(`/${s.tenant}/home.htmld`);
@@ -478,6 +468,7 @@ async function cmdKeepalive() {
   if (!(total >= 1)) cli.die('--count needs a whole number of 1 or more', { prefix: PREFIX });
   const MAX_PROBLEMS = 3;
   let problems = 0;
+  let failed = 0;
   for (let n = 1; ; n++) {
     const started = wd.now();
     const r = await touch();
@@ -492,13 +483,16 @@ async function cmdKeepalive() {
       console.log(`${clock(started)} OK${r.minutes ? ` (idle timeout ${r.minutes}m)` : ''}${n < total ? `, next in ${human(wait)}` : ''}`);
     } else {
       problems++;
+      failed++;
       console.log(`${clock(started)} PROBLEM ${r.problem}${n < total && problems < MAX_PROBLEMS ? `, retrying in ${human(wait)}` : ''}`);
       if (total === 1 || problems >= MAX_PROBLEMS) {
         cli.die(r.problem === 'rate limited' ? RATE_LIMITED : `keepalive failed: ${r.problem}${problems > 1 ? ` (${problems} times in a row)` : ''}`, { prefix: PREFIX });
       }
     }
-    if (n >= total) return;
-    // The wait counts from the start of the touch, so retries do not drift.
+    if (n >= total) {
+      if (failed) cli.die(`keepalive finished, but ${failed} of ${total} touches failed`, { prefix: PREFIX });
+      return;
+    }
     await wd.sleep(Math.max(0, wait - (wd.now() - started)));
   }
 }

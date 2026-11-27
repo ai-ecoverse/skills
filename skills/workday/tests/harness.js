@@ -1,7 +1,7 @@
 // cli.test.js — run the shipped workday.jsh against a fake Workday site.
 import fs from 'node:fs';
-import os from 'node:os';
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import { ok } from 'tst';
 import * as F from './fixtures.js';
@@ -46,8 +46,16 @@ export const ROUTES = {
   'GET /acme/search.htmld?q=Nobody&autocomplete=true': { listItems: [] },
   'GET /acme/inst/autocompletesearch/247$1001.htmld': F.PROFILE_ADA,
   'GET /acme/inst/autocompletesearch/247$7.htmld': F.PROFILE_CHARLES,
-  'GET /acme/inst/4547$1/rel-task/2998$90.htmld': F.teamPage('2500$2001', 'Analytical Engines  (Charles Babbage)', [F.ORG_TOP]),
-  'GET /acme/inst/4547$2/rel-task/2998$90.htmld': F.teamPage('2500$2001', 'Analytical Engines  (Charles Babbage)', [F.ORG_TOP]),
+  'GET /acme/inst/4547$1/rel-task/2998$90.htmld': F.teamPage(
+    '2500$2001',
+    'Analytical Engines  (Charles Babbage)',
+    [F.ORG_TOP]
+  ),
+  'GET /acme/inst/4547$2/rel-task/2998$90.htmld': F.teamPage(
+    '2500$2001',
+    'Analytical Engines  (Charles Babbage)',
+    [F.ORG_TOP]
+  ),
   'POST /acme/navigable/2500$2001.htmld': F.navigator(F.ORG_TOP, F.ORG_TEAM, [F.ADA, F.ALAN], {
     count: 3,
     chunk: '/acme/navigablechunk/c1-x/9',
@@ -66,10 +74,15 @@ export const ROUTES = {
 // can be an array: the answers are used in order, the last one repeats.
 export async function run(
   args,
-  { routes = ROUTES, tab = { targetId: 'T1', url: `${ORIGIN}/acme/d/home.htmld` }, cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wdcache-')), stdin = '', start = Date.UTC(2030, 0, 2, 9, 0, 0) } = {}
+  {
+    routes = ROUTES,
+    tab = { targetId: 'T1', url: `${ORIGIN}/acme/d/home.htmld` },
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wdcache-')),
+    stdin = '',
+    start = Date.UTC(2030, 0, 2, 9, 0, 0),
+  } = {}
 ) {
   const sleeps = [];
-  // A fake clock: it starts at `start` and only moves when the CLI sleeps.
   let clock = start;
   const seq = {};
   const calls = [];
@@ -88,7 +101,12 @@ export async function run(
         v = v[Math.min(seq[key], v.length - 1)];
       }
       if (v && v.status) return { ok: v.status < 400, headers: {}, ...v };
-      return { ok: true, status: 200, headers: {}, body: typeof v === 'string' ? v : JSON.stringify(v) };
+      return {
+        ok: true,
+        status: 200,
+        headers: {},
+        body: typeof v === 'string' ? v : JSON.stringify(v),
+      };
     },
   };
   const cli = {
@@ -149,4 +167,3 @@ export async function run(
   }
   return { code, stdout: out.join('\n'), stderr: err.join('\n'), calls, sleeps, cacheDir };
 }
-

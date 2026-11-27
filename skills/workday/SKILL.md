@@ -1,17 +1,17 @@
 ---
 name: workday
-description: Workday org chart and people directory from the browser session — find
-  colleagues by name, look up a person's title, email, location and manager, show
-  someone's management chain, team and direct reports, list the members of any
-  supervisory organization, resolve a list of names to ids in bulk (lookup), and walk a
-  whole org below a manager (tree), with a per-tenant cache, and keep an idle signed-in
-  Workday tab from being signed out (keepalive). Use when the user asks who someone reports to, who is on a
-  team, who their colleagues or peers are, who leads an org, what someone's job title
-  or email is, or wants to explore the Workday org chart without clicking through
-  myworkday.com. Triggers on Workday, myworkday.com, org chart, organization chart,
-  reporting line, management chain, manager, direct reports, skip-level, team members,
-  colleagues, supervisory organization, "who is", "who reports to", "who does X work
-  for". Triggers also on Workday session timeout, "signed out of Workday", keep Workday alive. Reads only. Runs in SLICC, and on a host under jsh over Chrome DevTools (CDP).
+description: Workday org chart and people directory from the browser session. Find
+  colleagues by name, look up a person's title, email, location and manager, show a
+  management chain, team and direct reports, list a supervisory organization, resolve
+  names to ids in bulk (lookup), walk a whole org below a manager (tree), with a
+  per-tenant cache, and keep an idle signed-in Workday tab from being signed out
+  (keepalive). Use when the user asks who someone reports to, who is on a team, who
+  their peers are, who leads an org, what someone's title or email is, wants to explore
+  the Workday org chart without clicking through myworkday.com, or keeps getting signed
+  out of Workday when idle. Triggers on Workday, myworkday.com, org chart, reporting
+  line, management chain, direct reports, skip-level, supervisory organization, "who
+  reports to", "who does X work for", Workday session timeout, keep Workday alive.
+  Reads only. Runs in SLICC, and on a host under jsh over Chrome DevTools (CDP).
 allowed-tools: bash
 ---
 
@@ -55,7 +55,6 @@ A name that matches several people stops with the candidates and their ids
 | `person [<name\|id>]` | Title, email, location, managers, org path (default: you) |
 | `orgchart [<name\|id>]` | Management chain (nearest first), the team the person is on with the person marked `▸`, and their direct reports. A manager's peers are the other leads in their parent org |
 | `org <2500$id>` | Owner, parent org and every member of one org; members that lead a team show its size |
-
 | `lookup` | Bulk resolver. Names on stdin, one per line (or with `--json` an array of objects with a `name`; other fields pass through, the answer is added as `workday`). Per name: `status` (`found`, `ambiguous`, `not-found`, `no-profile`), id, title, org, location, manager. An exact full-name match wins; an ambiguous or missing name gets a status and never stops the run |
 | `tree <name\|247$id\|2500$id>` | Every person below a person (the team they lead) or in an org, breadth-first, each once: id, name, title, location, `group` (the root's direct report whose sub-org holds them; a direct report heads their own group; the root's owner has none) and `depth`. Pages every org past its first page. `--depth N` expands N levels |
 | `keepalive` | Touch the session every few minutes so Workday doesn't sign the tab out for being idle. See below |
@@ -106,7 +105,8 @@ workday keepalive --count 3       # three touches, then exit
 ```
 
 One line per touch: `09:00:00 OK (idle timeout 30m), next in 10m`. Exit 0 when
-every touch worked. It exits 1, saying so, as soon as the session is gone (sign-in
+every touch worked; a bounded run (`--once`, `--count N`) with any failed touch
+exits 1 when it ends. It exits 1, saying so, as soon as the session is gone (sign-in
 page, 401/403, or an XML error); three failed touches in a row (HTTP 5xx, an
 unknown answer) also stop it, and a rate-limit answer uses the same 15 s, 30 s, 60 s
 retry as every other command.

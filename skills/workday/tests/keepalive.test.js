@@ -1,4 +1,3 @@
-// keepalive.test.js — `workday keepalive`, through the shipped workday.jsh against a fake site.
 import { createRequire } from 'node:module';
 import test, { is, ok } from 'tst';
 import * as F from './fixtures.js';
@@ -12,11 +11,13 @@ const PING = 'GET /acme/ping.htmld?clientRequestID=req0001';
 const MIN = 60000;
 const site = (home = F.homeWith(30), ping = F.PING_OK(30)) => ({ [HOME]: home, [PING]: ping });
 
-// ── --once ────────────────────────────────────────────────────────────
-test('--once: home.htmld, then the client\'s ping with the session token; exit 0', async () => {
+test("--once: home.htmld, then the client's ping with the session token; exit 0", async () => {
   const r = await run(['keepalive', '--once'], { routes: site() });
   is(r.code, 0, r.stderr);
-  is(r.calls.map((c) => c.key), [HOME, PING]);
+  is(
+    r.calls.map((c) => c.key),
+    [HOME, PING]
+  );
   is(r.calls[1].headers['Session-Secure-Token'], 'TEST-SESSION-TOKEN-0000');
   ok(/^\d\d:\d\d:\d\d OK \(idle timeout 30m\)$/.test(r.stdout), r.stdout);
   is(r.sleeps, []);
@@ -40,7 +41,10 @@ test('--once: a sign-in page instead of home.htmld exits 1 with the sign-in mess
   is(r.code, 1);
   ok(r.stderr.includes('sign in to Workday') && r.stderr.includes('never signs in'), r.stderr);
   ok(r.stdout.includes('SESSION GONE (sign-in page)'), r.stdout);
-  is(r.calls.map((c) => c.key), [HOME]);
+  is(
+    r.calls.map((c) => c.key),
+    [HOME]
+  );
 });
 
 test('--once: a sign-in page instead of the ping answer exits 1', async () => {
@@ -74,7 +78,9 @@ test('--once: a home.htmld without a session token is a lost session', async () 
 });
 
 test('--once: a rate-limit body is retried with the injected sleep, then it succeeds', async () => {
-  const r = await run(['keepalive', '--once'], { routes: { ...site(), [PING]: [F.TOO_MANY, F.TOO_MANY, F.PING_OK()] } });
+  const r = await run(['keepalive', '--once'], {
+    routes: { ...site(), [PING]: [F.TOO_MANY, F.TOO_MANY, F.PING_OK()] },
+  });
   is(r.code, 0, r.stderr);
   is(r.sleeps, [15000, 30000]);
   is(r.calls.filter((c) => c.key === PING).length, 3);
@@ -96,7 +102,6 @@ test('--once: an unknown ping answer or a 500 is a problem, exit 1', async () =>
   }
 });
 
-// ── the loop ──────────────────────────────────────────────────────────
 test('the loop touches, waits the interval, touches again, and stops on the first failure', async () => {
   const routes = site(F.homeWith(30), [F.PING_OK(), F.PING_OK(), F.SIGN_IN_PAGE, F.PING_OK()]);
   const r = await run(['keepalive', '--every', '10m'], { routes });
@@ -111,8 +116,15 @@ test('the loop touches, waits the interval, touches again, and stops on the firs
 });
 
 test('the interval comes from sessionTimeoutMinutes when --every is not given', async () => {
-  for (const [minutes, want] of [[30, 10 * MIN], [15, 5 * MIN], [60, 20 * MIN], [2, MIN]]) {
-    const r = await run(['keepalive', '--count', '2'], { routes: site(F.homeWith(minutes), F.PING_OK(minutes)) });
+  for (const [minutes, want] of [
+    [30, 10 * MIN],
+    [15, 5 * MIN],
+    [60, 20 * MIN],
+    [2, MIN],
+  ]) {
+    const r = await run(['keepalive', '--count', '2'], {
+      routes: site(F.homeWith(minutes), F.PING_OK(minutes)),
+    });
     is(r.code, 0, r.stderr);
     is(r.sleeps, [want], `${minutes} minutes`);
     ok(want < minutes * MIN || minutes < 2, 'below the timeout');
@@ -126,9 +138,10 @@ test('--every overrides the derived interval', async () => {
 });
 
 test('the wait counts from the start of the touch (the clock is read)', async () => {
-  // a ping answer that "takes" 3 s: the clock moves when the CLI sleeps, so use the rate-limit retry as the delay
   const routes = site(F.homeWith(30), [F.TOO_MANY, F.PING_OK(), F.PING_OK()]);
-  const r = await run(['keepalive', '--every', '10m', '--count', '2', '--retry-wait', '3s'], { routes });
+  const r = await run(['keepalive', '--every', '10m', '--count', '2', '--retry-wait', '3s'], {
+    routes,
+  });
   is(r.code, 0, r.stderr);
   is(r.sleeps, [3000, 10 * MIN - 3000]);
 });
@@ -140,7 +153,15 @@ test('--every longer than the session timeout warns', async () => {
 });
 
 test('a transient problem is retried at the next interval; three in a row stop it', async () => {
-  const routes = site(F.homeWith(30), [F.PING_OK(), { status: 503, body: '' }, F.PING_OK(), { status: 503, body: '' }, { status: 503, body: '' }, { status: 503, body: '' }, F.PING_OK()]);
+  const routes = site(F.homeWith(30), [
+    F.PING_OK(),
+    { status: 503, body: '' },
+    F.PING_OK(),
+    { status: 503, body: '' },
+    { status: 503, body: '' },
+    { status: 503, body: '' },
+    F.PING_OK(),
+  ]);
   const r = await run(['keepalive', '--every', '5m'], { routes });
   is(r.code, 1);
   is(r.sleeps.length, 5);
@@ -148,8 +169,25 @@ test('a transient problem is retried at the next interval; three in a row stop i
   ok(r.stderr.includes('3 times in a row'), r.stderr);
 });
 
+test('--count 2: a working touch then HTTP 503 exits 1, with and without --json', async () => {
+  for (const json of [[], ['--json']]) {
+    const routes = site(F.homeWith(30), [F.PING_OK(), { status: 503, body: '' }]);
+    const r = await run(['keepalive', '--count', '2', ...json], { routes });
+    is(r.code, 1, `${json.join(' ')} ${r.stderr}`);
+    is(r.calls.filter((c) => c.key === PING).length, 2);
+    is(r.sleeps, [10 * MIN]);
+    ok(r.stdout.includes('PROBLEM HTTP 503'), r.stdout);
+    ok(r.stderr.includes('1 of 2 touches failed'), r.stderr);
+  }
+});
+
 test('bad --every, --count', async () => {
-  for (const args of [['--every', 'soon'], ['--every', '0s'], ['--count', '0'], ['--count', 'x']]) {
+  for (const args of [
+    ['--every', 'soon'],
+    ['--every', '0s'],
+    ['--count', '0'],
+    ['--count', 'x'],
+  ]) {
     const r = await run(['keepalive', ...args], { routes: site() });
     is(r.code, 1, args.join(' '));
     is(r.calls, []);
@@ -169,7 +207,6 @@ test('keepalive does not touch the cache', async () => {
   is(fs.readdirSync(r.cacheDir), []);
 });
 
-// ── helpers ───────────────────────────────────────────────────────────
 test('parseKeepalive reads the answer and nothing else', () => {
   is(wd.parseKeepalive(F.PING_OK(30)), { minutes: 30 });
   is(wd.parseKeepalive('<a:Keepalive_Response/>'), { minutes: null });
