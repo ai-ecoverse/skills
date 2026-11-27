@@ -176,9 +176,27 @@ test('--count 2: a working touch then HTTP 503 exits 1, with and without --json'
     is(r.code, 1, `${json.join(' ')} ${r.stderr}`);
     is(r.calls.filter((c) => c.key === PING).length, 2);
     is(r.sleeps, [10 * MIN]);
-    ok(r.stdout.includes('PROBLEM HTTP 503'), r.stdout);
+    ok(r.stdout.includes(json.length ? '"status":"problem"' : 'PROBLEM HTTP 503'), r.stdout);
     ok(r.stderr.includes('1 of 2 touches failed'), r.stderr);
   }
+});
+
+test('--json: one JSON object per touch, no human lines', async () => {
+  const routes = site(F.homeWith(30), [F.PING_OK(), { status: 503, body: '' }, F.SIGN_IN_PAGE]);
+  const r = await run(['keepalive', '--count', '3', '--json'], { routes });
+  is(r.code, 1, r.stderr);
+  const lines = r.stdout.split('\n').map((l) => JSON.parse(l));
+  is(lines, [
+    { at: '2030-01-02T09:00:00.000Z', status: 'ok', timeoutMinutes: 30, nextMs: 10 * MIN },
+    {
+      at: '2030-01-02T09:10:00.000Z',
+      status: 'problem',
+      problem: 'HTTP 503 from ping.htmld',
+      nextMs: 5 * MIN,
+    },
+    { at: '2030-01-02T09:15:00.000Z', status: 'gone', reason: 'sign-in page' },
+  ]);
+  ok(!r.stdout.includes('TEST-SESSION-TOKEN'), r.stdout);
 });
 
 test('bad --every, --count', async () => {
